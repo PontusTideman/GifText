@@ -60,8 +60,8 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QMenu
 )
 from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QSize, QMimeData
-from PyQt6.QtGui import (, QIcon
-    QPixmap, QImage, QColor, QPainter, QFont, QPen, QBrush,
+from PyQt6.QtGui import (
+    QIcon, QPixmap, QImage, QColor, QPainter, QFont, QPen, QBrush,
     QFontMetrics, QPainterPath, QCursor, QWheelEvent, QAction, QLinearGradient
 )
 from PIL import Image, ImageDraw, ImageFont
