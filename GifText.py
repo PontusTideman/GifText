@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GifText v1.3.1 - Animated GIF Text Editor
+GifText v1.3.2 - Animated GIF Text Editor
 Full-featured meme text animator with keyframe animation, onion skinning,
 undo/redo, project save/load, drag-resize, text presets, and more.
 """
@@ -46,7 +46,7 @@ from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 LAYER_COLORS = [
     "#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7",
@@ -123,6 +123,52 @@ def build_path_keyframes(layer, points, start_frame, frame_count):
         kf.frame = frame
         kf.x = x
         kf.y = y
+        keyframes.append(kf)
+    return keyframes
+
+
+def build_effect_keyframes(layer, effect_name, start_frame, frame_count):
+    effect = effect_name.strip().lower()
+    if effect not in {"bounce", "wiggle", "shake"}:
+        raise ValueError(f"Unknown motion effect: {effect_name}")
+    if frame_count < 2:
+        raise ValueError("Motion effects need at least two frames")
+
+    keyframes = []
+    denom = max(1, frame_count - 1)
+    shake_pattern = [
+        (-1.0, 0.6, -5.0),
+        (0.9, -0.5, 5.0),
+        (-0.7, -0.3, -4.0),
+        (0.7, 0.4, 4.0),
+    ]
+    for offset in range(frame_count):
+        frame = start_frame + offset
+        t = offset / denom
+        kf = layer.get_interpolated(frame)
+        kf.frame = frame
+
+        if effect == "bounce":
+            lift = math.sin(math.pi * t)
+            kf.y = _clamp01(kf.y - 0.16 * lift)
+            kf.font_size = max(8, int(kf.font_size * (1.0 + 0.10 * lift)))
+        elif effect == "wiggle":
+            wave = math.sin(math.tau * 3.0 * t)
+            kf.x = _clamp01(kf.x + 0.018 * wave)
+            kf.rotation += 8.0 * wave
+        else:
+            if offset == 0 or offset == frame_count - 1:
+                dx = dy = rot = 0.0
+            else:
+                dx, dy, rot = shake_pattern[(offset - 1) % len(shake_pattern)]
+                envelope = math.sin(math.pi * t)
+                dx *= 0.025 * envelope
+                dy *= 0.018 * envelope
+                rot *= envelope
+            kf.x = _clamp01(kf.x + dx)
+            kf.y = _clamp01(kf.y + dy)
+            kf.rotation += rot
+
         keyframes.append(kf)
     return keyframes
 
@@ -1830,12 +1876,24 @@ class GifTextApp(QMainWindow):
         agl.addLayout(track_row, ar, 0, 1, 3)
         ar += 1
 
-        agl.addWidget(QLabel("Path Span:"), ar, 0)
+        agl.addWidget(QLabel("Motion Span:"), ar, 0)
         self.spin_path_span = QSpinBox()
         self.spin_path_span.setRange(2, 9999)
         self.spin_path_span.setValue(30)
         self.spin_path_span.setSuffix(" frames")
         agl.addWidget(self.spin_path_span, ar, 1, 1, 2)
+        ar += 1
+
+        effect_row = QHBoxLayout()
+        self.effect_buttons = []
+        for name in ("Bounce", "Wiggle", "Shake"):
+            btn = QPushButton(name)
+            btn.setFixedHeight(30)
+            btn.setObjectName("keyframeSet")
+            btn.clicked.connect(lambda checked, n=name: self._apply_effect_preset(n))
+            effect_row.addWidget(btn)
+            self.effect_buttons.append(btn)
+        agl.addLayout(effect_row, ar, 0, 1, 3)
         ar += 1
 
         path_row = QHBoxLayout()
@@ -1990,7 +2048,7 @@ class GifTextApp(QMainWindow):
             self.btn_copy_kf, self.btn_track_forward, self.spin_path_span,
             self.btn_draw_path, self.btn_clear_path, self.spin_frame_in, self.spin_frame_out,
             self.spin_fade_in, self.spin_fade_out,
-        ]:
+        ] + self.effect_buttons:
             widget.setEnabled(enabled)
 
     # ================================================================
@@ -2489,6 +2547,27 @@ class GifTextApp(QMainWindow):
         self._update_all()
         self.statusBar().showMessage(
             f"Copied keyframe to {count} frames ({self.current_frame + 1}-{min(self.current_frame + 10, self.total_frames)})"
+        )
+
+    def _apply_effect_preset(self, name):
+        if not self.selected_layer or not self.gif_frames:
+            return
+        if self.current_frame >= self.total_frames - 1:
+            self.statusBar().showMessage(f"{name} needs at least one later frame")
+            return
+
+        frame_count = min(self.spin_path_span.value(), self.total_frames - self.current_frame)
+        if frame_count < 2:
+            self.statusBar().showMessage(f"{name} needs at least two frames")
+            return
+
+        for kf in build_effect_keyframes(self.selected_layer, name, self.current_frame, frame_count):
+            self.selected_layer.set_keyframe(kf)
+
+        self._snapshot()
+        self._update_all()
+        self.statusBar().showMessage(
+            f"{name} generated {frame_count} editable keyframes through frame {self.current_frame + frame_count}"
         )
 
     def _toggle_path_capture(self):

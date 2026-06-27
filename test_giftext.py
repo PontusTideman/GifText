@@ -9,6 +9,7 @@ from GifText import (
     GifTextApp,
     TextKeyframe,
     TextLayer,
+    build_effect_keyframes,
     build_path_keyframes,
     sample_cubic_path,
 )
@@ -58,6 +59,25 @@ class PathAnimationTests(unittest.TestCase):
         self.assertEqual(restored.path_start_frame, 2)
         self.assertEqual(restored.path_end_frame, 12)
 
+    def test_effect_keyframes_generate_deterministic_emphasis(self):
+        layer = TextLayer("effects")
+        layer.keyframes = [TextKeyframe(frame=0, x=0.5, y=0.5, font_size=40, rotation=0.0)]
+
+        bounce = build_effect_keyframes(layer, "Bounce", start_frame=0, frame_count=5)
+        self.assertEqual((bounce[0].x, bounce[0].y), (0.5, 0.5))
+        self.assertEqual((bounce[-1].x, bounce[-1].y), (0.5, 0.5))
+        self.assertLess(bounce[2].y, 0.5)
+        self.assertGreater(bounce[2].font_size, 40)
+
+        wiggle = build_effect_keyframes(layer, "Wiggle", start_frame=0, frame_count=6)
+        self.assertAlmostEqual(wiggle[0].rotation, 0.0)
+        self.assertTrue(any(abs(kf.rotation) > 1.0 for kf in wiggle[1:-1]))
+
+        shake = build_effect_keyframes(layer, "Shake", start_frame=0, frame_count=5)
+        self.assertEqual((shake[0].x, shake[0].y, shake[0].rotation), (0.5, 0.5, 0.0))
+        self.assertEqual((shake[-1].x, shake[-1].y, shake[-1].rotation), (0.5, 0.5, 0.0))
+        self.assertTrue(any((kf.x, kf.y) != (0.5, 0.5) for kf in shake[1:-1]))
+
 
 class PathAnimationAppTests(unittest.TestCase):
     @classmethod
@@ -83,6 +103,23 @@ class PathAnimationAppTests(unittest.TestCase):
         self.assertEqual([kf.frame for kf in sorted(layer.keyframes, key=lambda k: k.frame)], [0, 1, 2, 3])
         self.assertEqual((layer.get_keyframe_at(1).x, layer.get_keyframe_at(1).y), (0.1, 0.1))
         self.assertEqual((layer.get_keyframe_at(3).x, layer.get_keyframe_at(3).y), (0.9, 0.9))
+        window.close()
+
+    def test_effect_button_flow_generates_keyframes(self):
+        window = GifTextApp()
+        layer = TextLayer("app effect")
+        window.gif_frames = [QPixmap(16, 16) for _ in range(4)]
+        window.total_frames = 4
+        window.current_frame = 0
+        window.layers = [layer]
+        window.selected_layer = layer
+        window.spin_path_span.setValue(4)
+
+        window._apply_effect_preset("Bounce")
+
+        self.assertEqual([kf.frame for kf in sorted(layer.keyframes, key=lambda k: k.frame)], [0, 1, 2, 3])
+        self.assertLess(layer.get_keyframe_at(1).y, 0.5)
+        self.assertEqual(layer.get_keyframe_at(3).y, 0.5)
         window.close()
 
 
