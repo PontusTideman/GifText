@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GifText v1.3.4 - Animated GIF Text Editor
+GifText v1.3.5 - Animated GIF Text Editor
 Full-featured meme text animator with keyframe animation, onion skinning,
 undo/redo, project save/load, drag-resize, text presets, and more.
 """
@@ -47,7 +47,7 @@ from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 
 LAYER_COLORS = [
     "#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7",
@@ -520,10 +520,12 @@ QScrollBar::sub-page:vertical {
 
 class TextKeyframe:
     __slots__ = ('frame', 'x', 'y', 'font_size', 'opacity',
-                 'color', 'outline_color', 'outline_width', 'rotation', 'easing')
+                 'color', 'outline_color', 'outline_width', 'outline_opacity',
+                 'shadow_color', 'shadow_opacity', 'rotation', 'easing')
 
     def __init__(self, frame=0, x=0.5, y=0.5, font_size=48, opacity=1.0,
                  color="#ffffff", outline_color="#000000", outline_width=3,
+                 outline_opacity=1.0, shadow_color="#000000", shadow_opacity=0.5,
                  rotation=0.0, easing="ease_in_out"):
         self.frame = frame
         self.x = x
@@ -533,14 +535,17 @@ class TextKeyframe:
         self.color = color
         self.outline_color = outline_color
         self.outline_width = outline_width
+        self.outline_opacity = _clamp01(outline_opacity)
+        self.shadow_color = shadow_color
+        self.shadow_opacity = _clamp01(shadow_opacity)
         self.rotation = rotation
         self.easing = easing if easing in EASING_CURVES else "ease_in_out"
 
     def copy(self):
         return TextKeyframe(
             self.frame, self.x, self.y, self.font_size, self.opacity,
-            self.color, self.outline_color, self.outline_width, self.rotation,
-            self.easing
+            self.color, self.outline_color, self.outline_width, self.outline_opacity,
+            self.shadow_color, self.shadow_opacity, self.rotation, self.easing
         )
 
     def to_dict(self):
@@ -629,9 +634,12 @@ class TextLayer:
         kf.font_size = int(mix(k1.font_size, k2.font_size))
         kf.opacity = mix(k1.opacity, k2.opacity)
         kf.outline_width = int(mix(k1.outline_width, k2.outline_width))
+        kf.outline_opacity = mix(k1.outline_opacity, k2.outline_opacity)
+        kf.shadow_opacity = mix(k1.shadow_opacity, k2.shadow_opacity)
         kf.rotation = mix(k1.rotation, k2.rotation)
         kf.color = mix_color(k1.color, k2.color)
         kf.outline_color = mix_color(k1.outline_color, k2.outline_color)
+        kf.shadow_color = mix_color(k1.shadow_color, k2.shadow_color)
         kf.easing = k1.easing
         return kf
 
@@ -1092,9 +1100,10 @@ class GifCanvas(QWidget):
 
             ow = int(kf.outline_width * scale)
             if ow > 0:
-                p.setPen(QPen(QColor(kf.outline_color), ow,
-                              Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                              Qt.PenJoinStyle.RoundJoin))
+                stroke_color = QColor(kf.outline_color)
+                stroke_color.setAlpha(int(255 * kf.outline_opacity))
+                p.setPen(QPen(stroke_color, ow, Qt.PenStyle.SolidLine,
+                              Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(path)
 
@@ -1103,7 +1112,9 @@ class GifCanvas(QWidget):
                 sp = QPainterPath()
                 sp.addText(lx + soff, ly + soff, font, line)
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(0, 0, 0, 128))
+                shadow_color = QColor(kf.shadow_color)
+                shadow_color.setAlpha(int(255 * kf.shadow_opacity))
+                p.setBrush(shadow_color)
                 p.drawPath(sp)
 
             p.setPen(Qt.PenStyle.NoPen)
@@ -1910,6 +1921,24 @@ class GifTextApp(QMainWindow):
         agl.addWidget(self.spin_outline, ar, 1, 1, 2)
         ar += 1
 
+        agl.addWidget(QLabel("Stroke Alpha:"), ar, 0)
+        self.spin_outline_opacity = QDoubleSpinBox()
+        self.spin_outline_opacity.setRange(0.0, 1.0)
+        self.spin_outline_opacity.setSingleStep(0.05)
+        self.spin_outline_opacity.setValue(1.0)
+        self.spin_outline_opacity.valueChanged.connect(self._on_anim_prop_changed)
+        agl.addWidget(self.spin_outline_opacity, ar, 1, 1, 2)
+        ar += 1
+
+        agl.addWidget(QLabel("Shadow Alpha:"), ar, 0)
+        self.spin_shadow_opacity = QDoubleSpinBox()
+        self.spin_shadow_opacity.setRange(0.0, 1.0)
+        self.spin_shadow_opacity.setSingleStep(0.05)
+        self.spin_shadow_opacity.setValue(0.5)
+        self.spin_shadow_opacity.valueChanged.connect(self._on_anim_prop_changed)
+        agl.addWidget(self.spin_shadow_opacity, ar, 1, 1, 2)
+        ar += 1
+
         color_row = QHBoxLayout()
         self.btn_color = QPushButton("Fill")
         self.btn_color.setFixedHeight(28)
@@ -1921,6 +1950,11 @@ class GifTextApp(QMainWindow):
         self.btn_outline_color.clicked.connect(lambda: self._pick_color("outline"))
         self.btn_outline_color.setStyleSheet("background: #000000; color: #fff; border-radius: 4px; font-weight: 600;")
         color_row.addWidget(self.btn_outline_color)
+        self.btn_shadow_color = QPushButton("Shadow")
+        self.btn_shadow_color.setFixedHeight(28)
+        self.btn_shadow_color.clicked.connect(lambda: self._pick_color("shadow"))
+        self.btn_shadow_color.setStyleSheet("background: #000000; color: #fff; border-radius: 4px; font-weight: 600;")
+        color_row.addWidget(self.btn_shadow_color)
         agl.addLayout(color_row, ar, 0, 1, 3)
         ar += 1
 
@@ -2144,7 +2178,8 @@ class GifTextApp(QMainWindow):
             self.txt_input, self.font_combo, self.chk_bold, self.chk_italic,
             self.chk_upper, self.chk_shadow, self.chk_bgbox, self.align_combo,
             self.spin_size, self.spin_opacity, self.spin_rotation, self.ease_combo, self.spin_outline,
-            self.btn_color, self.btn_outline_color, self.btn_set_kf, self.btn_del_kf,
+            self.spin_outline_opacity, self.spin_shadow_opacity,
+            self.btn_color, self.btn_outline_color, self.btn_shadow_color, self.btn_set_kf, self.btn_del_kf,
             self.btn_copy_kf, self.btn_track_forward, self.spin_path_span,
             self.btn_draw_path, self.btn_clear_path, self.spin_frame_in, self.spin_frame_out,
             self.spin_fade_in, self.spin_fade_out, self.stagger_combo, self.spin_stagger_frames,
@@ -2433,6 +2468,8 @@ class GifTextApp(QMainWindow):
             self.spin_rotation.setValue(0.0)
             self.ease_combo.setCurrentIndex(self.ease_combo.findData("ease_in_out"))
             self.spin_outline.setValue(3)
+            self.spin_outline_opacity.setValue(1.0)
+            self.spin_shadow_opacity.setValue(0.5)
             self.spin_frame_in.setValue(0)
             self.spin_frame_out.setValue(-1)
             self.spin_fade_in.setValue(0)
@@ -2444,6 +2481,9 @@ class GifTextApp(QMainWindow):
                 "background: #ffffff; color: #000; border-radius: 4px; font-weight: 600;"
             )
             self.btn_outline_color.setStyleSheet(
+                "background: #000000; color: #fff; border-radius: 4px; font-weight: 600;"
+            )
+            self.btn_shadow_color.setStyleSheet(
                 "background: #000000; color: #fff; border-radius: 4px; font-weight: 600;"
             )
             self._block(False)
@@ -2470,6 +2510,8 @@ class GifTextApp(QMainWindow):
         ease_idx = self.ease_combo.findData(kf.easing)
         self.ease_combo.setCurrentIndex(ease_idx if ease_idx >= 0 else self.ease_combo.findData("ease_in_out"))
         self.spin_outline.setValue(kf.outline_width)
+        self.spin_outline_opacity.setValue(kf.outline_opacity)
+        self.spin_shadow_opacity.setValue(kf.shadow_opacity)
 
         self.btn_color.setStyleSheet(
             f"background: {kf.color}; color: {'#000' if QColor(kf.color).lightness() > 128 else '#fff'}; "
@@ -2477,6 +2519,10 @@ class GifTextApp(QMainWindow):
         )
         self.btn_outline_color.setStyleSheet(
             f"background: {kf.outline_color}; color: {'#000' if QColor(kf.outline_color).lightness() > 128 else '#fff'}; "
+            f"border-radius: 4px; font-weight: 600;"
+        )
+        self.btn_shadow_color.setStyleSheet(
+            f"background: {kf.shadow_color}; color: {'#000' if QColor(kf.shadow_color).lightness() > 128 else '#fff'}; "
             f"border-radius: 4px; font-weight: 600;"
         )
         self.pos_label.setText(f"Position: ({kf.x:.2f}, {kf.y:.2f})")
@@ -2514,6 +2560,7 @@ class GifTextApp(QMainWindow):
     def _block(self, b):
         for w in [self.txt_input, self.spin_size, self.spin_opacity,
                   self.spin_rotation, self.spin_outline, self.font_combo,
+                  self.spin_outline_opacity, self.spin_shadow_opacity,
                   self.ease_combo,
                   self.chk_bold, self.chk_italic, self.chk_upper, self.chk_shadow,
                   self.chk_bgbox, self.align_combo, self.spin_frame_in,
@@ -2560,6 +2607,8 @@ class GifTextApp(QMainWindow):
         kf.opacity = self.spin_opacity.value()
         kf.rotation = self.spin_rotation.value()
         kf.outline_width = self.spin_outline.value()
+        kf.outline_opacity = self.spin_outline_opacity.value()
+        kf.shadow_opacity = self.spin_shadow_opacity.value()
         self._schedule_snapshot()
         self._update_all()
 
@@ -2588,7 +2637,12 @@ class GifTextApp(QMainWindow):
         if not self.selected_layer:
             return
         kf = self.selected_layer.get_interpolated(self.current_frame)
-        initial = QColor(kf.color if target == "text" else kf.outline_color)
+        if target == "text":
+            initial = QColor(kf.color)
+        elif target == "outline":
+            initial = QColor(kf.outline_color)
+        else:
+            initial = QColor(kf.shadow_color)
         color = QColorDialog.getColor(initial, self, f"Pick {target} color")
         if not color.isValid():
             return
@@ -2596,8 +2650,10 @@ class GifTextApp(QMainWindow):
         existing = self._ensure_keyframe(layer)
         if target == "text":
             existing.color = color.name()
-        else:
+        elif target == "outline":
             existing.outline_color = color.name()
+        else:
+            existing.shadow_color = color.name()
         self._snapshot()
         self._update_all()
 
@@ -2617,6 +2673,9 @@ class GifTextApp(QMainWindow):
         kf.color = p["color"]
         kf.outline_color = p["outline_color"]
         kf.outline_width = p["outline_width"]
+        kf.outline_opacity = 1.0
+        kf.shadow_color = "#000000"
+        kf.shadow_opacity = 0.5
         self._snapshot()
         self._update_all()
         self.statusBar().showMessage(f"Applied preset: {name}")
@@ -2635,6 +2694,8 @@ class GifTextApp(QMainWindow):
         kf.opacity = self.spin_opacity.value()
         kf.rotation = self.spin_rotation.value()
         kf.outline_width = self.spin_outline.value()
+        kf.outline_opacity = self.spin_outline_opacity.value()
+        kf.shadow_opacity = self.spin_shadow_opacity.value()
         kf.easing = self.ease_combo.currentData() or "ease_in_out"
         layer.set_keyframe(kf)
         self._snapshot()
@@ -3109,6 +3170,9 @@ class GifTextApp(QMainWindow):
 
         text_rgb = tuple(int(kf.color[i:i+2], 16) for i in (1, 3, 5))
         outline_rgb = tuple(int(kf.outline_color[i:i+2], 16) for i in (1, 3, 5))
+        shadow_rgb = tuple(int(kf.shadow_color[i:i+2], 16) for i in (1, 3, 5))
+        outline_alpha = int(effective_alpha * kf.outline_opacity)
+        shadow_alpha = int(effective_alpha * kf.shadow_opacity)
 
         # Background box
         if layer.bg_box:
@@ -3131,20 +3195,20 @@ class GifTextApp(QMainWindow):
             if kf.outline_width > 0:
                 try:
                     draw.text((lx, y_cursor), line, font=font,
-                              fill=(*outline_rgb, effective_alpha),
+                              fill=(*outline_rgb, outline_alpha),
                               stroke_width=kf.outline_width,
-                              stroke_fill=(*outline_rgb, effective_alpha))
+                              stroke_fill=(*outline_rgb, outline_alpha))
                 except TypeError:
                     ow = kf.outline_width
                     for dx in range(-ow, ow + 1):
                         for dy in range(-ow, ow + 1):
                             if dx * dx + dy * dy <= ow * ow:
                                 draw.text((lx + dx, y_cursor + dy), line, font=font,
-                                          fill=(*outline_rgb, effective_alpha))
+                                          fill=(*outline_rgb, outline_alpha))
 
             if layer.shadow:
                 draw.text((lx + 2, y_cursor + 2), line, font=font,
-                          fill=(0, 0, 0, effective_alpha // 2))
+                          fill=(*shadow_rgb, shadow_alpha))
 
             draw.text((lx, y_cursor), line, font=font, fill=(*text_rgb, effective_alpha))
             y_cursor += lh

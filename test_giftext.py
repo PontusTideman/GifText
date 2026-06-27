@@ -72,6 +72,9 @@ class PathAnimationTests(unittest.TestCase):
         layer.stagger_mode = "words"
         layer.stagger_frames = 3
         layer.keyframes[0].easing = "overshoot"
+        layer.keyframes[0].outline_opacity = 0.4
+        layer.keyframes[0].shadow_color = "#112233"
+        layer.keyframes[0].shadow_opacity = 0.3
 
         restored = TextLayer.from_dict(layer.to_dict())
 
@@ -81,6 +84,24 @@ class PathAnimationTests(unittest.TestCase):
         self.assertEqual(restored.stagger_mode, "words")
         self.assertEqual(restored.stagger_frames, 3)
         self.assertEqual(restored.keyframes[0].easing, "overshoot")
+        self.assertAlmostEqual(restored.keyframes[0].outline_opacity, 0.4)
+        self.assertEqual(restored.keyframes[0].shadow_color, "#112233")
+        self.assertAlmostEqual(restored.keyframes[0].shadow_opacity, 0.3)
+
+    def test_stroke_shadow_fields_interpolate(self):
+        layer = TextLayer("render fields")
+        layer.keyframes = [
+            TextKeyframe(frame=0, outline_opacity=0.2, shadow_opacity=0.1, shadow_color="#000000"),
+            TextKeyframe(frame=10, outline_opacity=0.8, shadow_opacity=0.7, shadow_color="#ffffff"),
+        ]
+
+        mid = layer.get_interpolated(5)
+
+        self.assertGreater(mid.outline_opacity, 0.2)
+        self.assertLess(mid.outline_opacity, 0.8)
+        self.assertGreater(mid.shadow_opacity, 0.1)
+        self.assertLess(mid.shadow_opacity, 0.7)
+        self.assertNotEqual(mid.shadow_color, "#000000")
 
     def test_staggered_text_reveals_lines_words_and_letters(self):
         text = "Top line\nBottom line"
@@ -179,6 +200,18 @@ class PathAnimationAppTests(unittest.TestCase):
 
         self.assertEqual(layer.stagger_mode, "letters")
         self.assertEqual(layer.stagger_frames, 4)
+        window.close()
+
+    def test_stroke_shadow_controls_update_current_keyframe(self):
+        window = GifTextApp()
+        layer = TextLayer("app render fields")
+        window.layers = [layer]
+        window.selected_layer = layer
+        window.spin_outline_opacity.setValue(0.45)
+        window.spin_shadow_opacity.setValue(0.25)
+
+        self.assertAlmostEqual(layer.get_keyframe_at(0).outline_opacity, 0.45)
+        self.assertAlmostEqual(layer.get_keyframe_at(0).shadow_opacity, 0.25)
         window.close()
 
 
