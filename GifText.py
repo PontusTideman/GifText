@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-GifText v1.2.1 - Animated GIF Text Editor
+GifText v1.3.0 - Animated GIF Text Editor
 Full-featured meme text animator with keyframe animation, onion skinning,
 undo/redo, project save/load, drag-resize, text presets, and more.
 """
 
+import multiprocessing
+multiprocessing.freeze_support()
+
 import sys
 import os
 import math
-import copy
 import json
-import time
 from pathlib import Path
 
 
-# codex-branding:start
 def _branding_icon_path() -> Path:
     candidates = []
     if getattr(sys, "frozen", False):
@@ -29,28 +29,6 @@ def _branding_icon_path() -> Path:
         if candidate.exists():
             return candidate
     return Path("icon.png")
-# codex-branding:end
-
-
-def _bootstrap():
-    import subprocess
-    required = {"PyQt6": "PyQt6", "PIL": "Pillow", "cv2": "opencv-python-headless"}
-    for mod, pkg in required.items():
-        try:
-            __import__(mod)
-        except ImportError:
-            for cmd in [
-                [sys.executable, "-m", "pip", "install", pkg],
-                [sys.executable, "-m", "pip", "install", "--user", pkg],
-                [sys.executable, "-m", "pip", "install", "--break-system-packages", pkg],
-            ]:
-                try:
-                    subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    break
-                except Exception:
-                    continue
-
-_bootstrap()
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -67,9 +45,8 @@ from PyQt6.QtGui import (
 from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
-import io
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 LAYER_COLORS = [
     "#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7",
@@ -1688,6 +1665,16 @@ class GifTextApp(QMainWindow):
         agl.addLayout(kf_row, ar, 0, 1, 3)
         ar += 1
 
+        track_row = QHBoxLayout()
+        self.btn_track_forward = QPushButton("Track Forward")
+        self.btn_track_forward.setObjectName("keyframeSet")
+        self.btn_track_forward.setFixedHeight(30)
+        self.btn_track_forward.setToolTip("Generate keyframes from the selected layer position through the remaining frames")
+        self.btn_track_forward.clicked.connect(self._track_selected_layer_forward)
+        track_row.addWidget(self.btn_track_forward)
+        agl.addLayout(track_row, ar, 0, 1, 3)
+        ar += 1
+
         self.kf_info = QLabel("")
         self.kf_info.setStyleSheet("color: #f9e2af; font-size: 11px;")
         self.kf_info.setWordWrap(True)
@@ -1817,7 +1804,7 @@ class GifTextApp(QMainWindow):
             self.chk_upper, self.chk_shadow, self.chk_bgbox, self.align_combo,
             self.spin_size, self.spin_opacity, self.spin_rotation, self.spin_outline,
             self.btn_color, self.btn_outline_color, self.btn_set_kf, self.btn_del_kf,
-            self.btn_copy_kf, self.spin_frame_in, self.spin_frame_out,
+            self.btn_copy_kf, self.btn_track_forward, self.spin_frame_in, self.spin_frame_out,
             self.spin_fade_in, self.spin_fade_out,
         ]:
             widget.setEnabled(enabled)
@@ -2301,6 +2288,136 @@ class GifTextApp(QMainWindow):
         self.statusBar().showMessage(
             f"Copied keyframe to {count} frames ({self.current_frame + 1}-{min(self.current_frame + 10, self.total_frames)})"
         )
+
+    def _track_selected_layer_forward(self):
+        if not self.selected_layer or not self.gif_pil_frames:
+            return
+        if self.current_frame >= self.total_frames - 1:
+            self.statusBar().showMessage("Tracking needs at least one later frame")
+            return
+
+        layer = self.selected_layer
+        seed = self._ensure_keyframe(layer)
+        positions = self._track_positions_from_point(self.current_frame, seed.x, seed.y)
+        if len(positions) < 2:
+            self.statusBar().showMessage("Tracking lost the point before a new keyframe could be made")
+            return
+
+        for frame_idx, x, y in positions:
+            kf = layer.get_interpolated(frame_idx)
+            kf.frame = frame_idx
+            kf.x = x
+            kf.y = y
+            layer.set_keyframe(kf)
+
+        self._snapshot()
+        self._update_all()
+        self.statusBar().showMessage(
+            f"Tracked {len(positions) - 1} frames and generated keyframes through frame {positions[-1][0] + 1}"
+        )
+
+    def _track_positions_from_point(self, start_frame, rx, ry):
+        positions = self._track_positions_with_object_tracker(start_frame, rx, ry)
+        if len(positions) >= 2:
+            return positions
+        return self._track_positions_with_optical_flow(start_frame, rx, ry)
+
+    def _cv_bgr_frame(self, frame_idx):
+        rgb = np.asarray(self.gif_pil_frames[frame_idx].convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    def _cv_gray_frame(self, frame_idx):
+        rgb = np.asarray(self.gif_pil_frames[frame_idx].convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+    def _create_cv_tracker(self):
+        sources = [cv2]
+        legacy = getattr(cv2, "legacy", None)
+        if legacy is not None:
+            sources.append(legacy)
+        for source in sources:
+            for name in ("TrackerCSRT_create", "TrackerKCF_create"):
+                factory = getattr(source, name, None)
+                if factory is None:
+                    continue
+                try:
+                    return factory()
+                except Exception:
+                    continue
+        return None
+
+    def _track_positions_with_object_tracker(self, start_frame, rx, ry):
+        tracker = self._create_cv_tracker()
+        if tracker is None:
+            return []
+
+        first = self._cv_bgr_frame(start_frame)
+        h, w = first.shape[:2]
+        cx, cy = rx * w, ry * h
+        radius = max(8, min(36, int(min(w, h) * 0.08)))
+        x0 = max(0, min(w - 2, int(cx - radius)))
+        y0 = max(0, min(h - 2, int(cy - radius)))
+        x1 = max(x0 + 2, min(w, int(cx + radius)))
+        y1 = max(y0 + 2, min(h, int(cy + radius)))
+        bbox = (x0, y0, x1 - x0, y1 - y0)
+
+        try:
+            initialized = tracker.init(first, bbox)
+        except Exception:
+            return []
+        if initialized is False:
+            return []
+
+        positions = [(start_frame, rx, ry)]
+        for frame_idx in range(start_frame + 1, self.total_frames):
+            try:
+                ok, tracked_box = tracker.update(self._cv_bgr_frame(frame_idx))
+            except Exception:
+                break
+            if not ok:
+                break
+            x, y, bw, bh = tracked_box
+            tx = (x + bw / 2) / max(1, w)
+            ty = (y + bh / 2) / max(1, h)
+            if not (math.isfinite(tx) and math.isfinite(ty)):
+                break
+            positions.append((frame_idx, max(0.0, min(1.0, tx)), max(0.0, min(1.0, ty))))
+        return positions
+
+    def _track_positions_with_optical_flow(self, start_frame, rx, ry):
+        first = self._cv_gray_frame(start_frame)
+        h, w = first.shape[:2]
+        point = np.array([[[rx * w, ry * h]]], dtype=np.float32)
+        positions = [(start_frame, rx, ry)]
+        prev = first
+
+        criteria = (
+            cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+            24,
+            0.01,
+        )
+        for frame_idx in range(start_frame + 1, self.total_frames):
+            nxt = self._cv_gray_frame(frame_idx)
+            next_point, status, _err = cv2.calcOpticalFlowPyrLK(
+                prev,
+                nxt,
+                point,
+                None,
+                winSize=(31, 31),
+                maxLevel=3,
+                criteria=criteria,
+            )
+            if next_point is None or status is None or status[0][0] != 1:
+                break
+            x, y = next_point[0][0]
+            if not (math.isfinite(float(x)) and math.isfinite(float(y))):
+                break
+            if x < 0 or y < 0 or x >= w or y >= h:
+                break
+            positions.append((frame_idx, float(x) / max(1, w), float(y) / max(1, h)))
+            prev = nxt
+            point = next_point.reshape(1, 1, 2)
+        return positions
 
     # ================================================================
     #  Undo / Redo

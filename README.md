@@ -1,6 +1,6 @@
 # GifText
 
-![Version](https://img.shields.io/badge/version-v1.2.1-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-Python-lightgrey)
+![Version](https://img.shields.io/badge/version-v1.3.0-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-Python-lightgrey)
 
 Add animated text to GIFs for meme creation. Track text labels on moving subjects with keyframe-based animation and smooth interpolation.
 
@@ -9,6 +9,7 @@ Add animated text to GIFs for meme creation. Track text labels on moving subject
 ## Features
 
 - **Keyframe Animation** - Position, size, opacity, rotation, and color all animatable per-frame with smooth ease-in-out interpolation
+- **OpenCV Motion Tracking** - Generate forward keyframes from the selected layer position with CSRT/KCF when available and optical-flow fallback
 - **On-Canvas Editing** - Click to select text, drag to reposition, drag corner handle to resize
 - **Onion Skinning** - Ghost previous frame to track moving subjects
 - **Multiple Text Layers** - Color-coded with individual timing controls
@@ -28,13 +29,17 @@ Add animated text to GIFs for meme creation. Track text labels on moving subject
 ## Quick Start
 
 ```bash
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
 python GifText.py
 ```
 
-Dependencies (auto-installed on first run):
+Dependencies:
 - Python 3.10+
 - PyQt6
 - Pillow
+- OpenCV
+- NumPy
 
 ## Workflow Example: Labeling People in a GIF
 
@@ -44,8 +49,9 @@ Dependencies (auto-installed on first run):
 4. **Drag** each name above its subject on frame 1
 5. **Mousewheel** on canvas to step forward ~10 frames
 6. **Drag** names to follow movement (keyframes auto-created)
-7. Repeat until the end - interpolation fills the gaps smoothly
-8. **Export** as GIF, WebP, or PNG sequence
+7. Use **Track Forward** to generate motion keyframes when the subject is easy to follow
+8. Repeat until the end - interpolation fills the gaps smoothly
+9. **Export** as GIF, WebP, or PNG sequence
 
 ## Controls
 
@@ -64,7 +70,17 @@ Dependencies (auto-installed on first run):
 
 - Python / PyQt6 for the GUI
 - Pillow for GIF I/O and export rendering
-- Single file, zero config, auto-installs dependencies
+- OpenCV and NumPy for forward motion tracking
+- Single-file app with dependencies listed in `requirements.txt`
+
+## Build Windows EXE
+
+```bash
+.venv\Scripts\python -m pip install -r requirements-build.txt
+.venv\Scripts\pyinstaller --clean GifText.spec
+```
+
+The executable is written to `dist\GifText.exe`.
 
 ## License
 
