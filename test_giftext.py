@@ -9,6 +9,7 @@ from GifText import (
     GifTextApp,
     TextKeyframe,
     TextLayer,
+    apply_easing_curve,
     build_effect_keyframes,
     build_path_keyframes,
     sample_cubic_path,
@@ -47,17 +48,34 @@ class PathAnimationTests(unittest.TestCase):
         self.assertEqual(keyframes[-1].font_size, 80)
         self.assertAlmostEqual(keyframes[-1].rotation, 45.0)
 
+    def test_easing_curves_change_interpolated_timing(self):
+        self.assertAlmostEqual(apply_easing_curve("linear", 0.5), 0.5, places=3)
+        self.assertLess(apply_easing_curve("ease_in", 0.5), 0.5)
+        self.assertGreater(apply_easing_curve("ease_out", 0.5), 0.5)
+
+        layer = TextLayer("ease")
+        layer.keyframes = [
+            TextKeyframe(frame=0, x=0.0, y=0.5, easing="linear"),
+            TextKeyframe(frame=10, x=1.0, y=0.5),
+        ]
+        self.assertAlmostEqual(layer.get_interpolated(5).x, 0.5, places=3)
+
+        layer.keyframes[0].easing = "ease_in"
+        self.assertLess(layer.get_interpolated(5).x, 0.5)
+
     def test_layer_path_metadata_round_trips(self):
         layer = TextLayer("round trip")
         layer.path_points = [(0.1, 0.2), (0.3, 0.4), (0.5, 0.6), (0.7, 0.8)]
         layer.path_start_frame = 2
         layer.path_end_frame = 12
+        layer.keyframes[0].easing = "overshoot"
 
         restored = TextLayer.from_dict(layer.to_dict())
 
         self.assertEqual(restored.path_points, layer.path_points)
         self.assertEqual(restored.path_start_frame, 2)
         self.assertEqual(restored.path_end_frame, 12)
+        self.assertEqual(restored.keyframes[0].easing, "overshoot")
 
     def test_effect_keyframes_generate_deterministic_emphasis(self):
         layer = TextLayer("effects")
@@ -120,6 +138,17 @@ class PathAnimationAppTests(unittest.TestCase):
         self.assertEqual([kf.frame for kf in sorted(layer.keyframes, key=lambda k: k.frame)], [0, 1, 2, 3])
         self.assertLess(layer.get_keyframe_at(1).y, 0.5)
         self.assertEqual(layer.get_keyframe_at(3).y, 0.5)
+        window.close()
+
+    def test_easing_selector_updates_current_keyframe(self):
+        window = GifTextApp()
+        layer = TextLayer("app ease")
+        window.layers = [layer]
+        window.selected_layer = layer
+        idx = window.ease_combo.findData("ease_out")
+        window.ease_combo.setCurrentIndex(idx)
+
+        self.assertEqual(layer.get_keyframe_at(0).easing, "ease_out")
         window.close()
 
 

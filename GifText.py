@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GifText v1.3.2 - Animated GIF Text Editor
+GifText v1.3.3 - Animated GIF Text Editor
 Full-featured meme text animator with keyframe animation, onion skinning,
 undo/redo, project save/load, drag-resize, text presets, and more.
 """
@@ -46,7 +46,7 @@ from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 
 LAYER_COLORS = [
     "#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7",
@@ -66,8 +66,38 @@ MEME_PRESETS = {
              "outline_color": "#cba6f7", "outline_width": 3, "shadow": True, "size": 40, "bg_box": False},
 }
 
+EASING_CURVES = {
+    "linear": ("Linear", (0.0, 0.0, 1.0, 1.0)),
+    "ease_in": ("Ease In", (0.42, 0.0, 1.0, 1.0)),
+    "ease_out": ("Ease Out", (0.0, 0.0, 0.58, 1.0)),
+    "ease_in_out": ("Ease In Out", (0.42, 0.0, 0.58, 1.0)),
+    "snappy": ("Snappy", (0.2, 0.9, 0.25, 1.0)),
+    "overshoot": ("Overshoot", (0.34, 1.56, 0.64, 1.0)),
+}
+
 def _clamp01(value):
     return max(0.0, min(1.0, float(value)))
+
+
+def _bezier_component(p1, p2, t):
+    mt = 1.0 - t
+    return 3.0 * mt * mt * t * p1 + 3.0 * mt * t * t * p2 + t * t * t
+
+
+def apply_easing_curve(easing, t):
+    t = _clamp01(t)
+    _label, curve = EASING_CURVES.get(easing, EASING_CURVES["ease_in_out"])
+    x1, y1, x2, y2 = curve
+    lo, hi = 0.0, 1.0
+    sample = t
+    for _ in range(16):
+        sample = (lo + hi) / 2.0
+        x = _bezier_component(x1, x2, sample)
+        if x < t:
+            lo = sample
+        else:
+            hi = sample
+    return _clamp01(_bezier_component(y1, y2, sample))
 
 
 def _normalize_path_points(points):
@@ -460,11 +490,11 @@ QScrollBar::sub-page:vertical {
 
 class TextKeyframe:
     __slots__ = ('frame', 'x', 'y', 'font_size', 'opacity',
-                 'color', 'outline_color', 'outline_width', 'rotation')
+                 'color', 'outline_color', 'outline_width', 'rotation', 'easing')
 
     def __init__(self, frame=0, x=0.5, y=0.5, font_size=48, opacity=1.0,
                  color="#ffffff", outline_color="#000000", outline_width=3,
-                 rotation=0.0):
+                 rotation=0.0, easing="ease_in_out"):
         self.frame = frame
         self.x = x
         self.y = y
@@ -474,11 +504,13 @@ class TextKeyframe:
         self.outline_color = outline_color
         self.outline_width = outline_width
         self.rotation = rotation
+        self.easing = easing if easing in EASING_CURVES else "ease_in_out"
 
     def copy(self):
         return TextKeyframe(
             self.frame, self.x, self.y, self.font_size, self.opacity,
-            self.color, self.outline_color, self.outline_width, self.rotation
+            self.color, self.outline_color, self.outline_width, self.rotation,
+            self.easing
         )
 
     def to_dict(self):
@@ -550,7 +582,7 @@ class TextLayer:
                 if span == 0:
                     return k1.copy()
                 t = (frame - k1.frame) / span
-                t = t * t * (3 - 2 * t)
+                t = apply_easing_curve(k1.easing, t)
                 return self._lerp(k1, k2, t, frame)
         return sorted_kfs[-1].copy()
 
@@ -568,6 +600,7 @@ class TextLayer:
         kf.rotation = mix(k1.rotation, k2.rotation)
         kf.color = mix_color(k1.color, k2.color)
         kf.outline_color = mix_color(k1.outline_color, k2.outline_color)
+        kf.easing = k1.easing
         return kf
 
     def get_keyframe_at(self, frame):
@@ -1821,6 +1854,14 @@ class GifTextApp(QMainWindow):
         agl.addWidget(self.spin_rotation, ar, 1, 1, 2)
         ar += 1
 
+        agl.addWidget(QLabel("Curve:"), ar, 0)
+        self.ease_combo = QComboBox()
+        for easing_id, (label, _curve) in EASING_CURVES.items():
+            self.ease_combo.addItem(label, easing_id)
+        self.ease_combo.currentIndexChanged.connect(self._on_easing_changed)
+        agl.addWidget(self.ease_combo, ar, 1, 1, 2)
+        ar += 1
+
         agl.addWidget(QLabel("Outline:"), ar, 0)
         self.spin_outline = QSpinBox()
         self.spin_outline.setRange(0, 20)
@@ -2043,7 +2084,7 @@ class GifTextApp(QMainWindow):
         for widget in [
             self.txt_input, self.font_combo, self.chk_bold, self.chk_italic,
             self.chk_upper, self.chk_shadow, self.chk_bgbox, self.align_combo,
-            self.spin_size, self.spin_opacity, self.spin_rotation, self.spin_outline,
+            self.spin_size, self.spin_opacity, self.spin_rotation, self.ease_combo, self.spin_outline,
             self.btn_color, self.btn_outline_color, self.btn_set_kf, self.btn_del_kf,
             self.btn_copy_kf, self.btn_track_forward, self.spin_path_span,
             self.btn_draw_path, self.btn_clear_path, self.spin_frame_in, self.spin_frame_out,
@@ -2329,6 +2370,7 @@ class GifTextApp(QMainWindow):
             self.spin_size.setValue(48)
             self.spin_opacity.setValue(1.0)
             self.spin_rotation.setValue(0.0)
+            self.ease_combo.setCurrentIndex(self.ease_combo.findData("ease_in_out"))
             self.spin_outline.setValue(3)
             self.spin_frame_in.setValue(0)
             self.spin_frame_out.setValue(-1)
@@ -2362,6 +2404,8 @@ class GifTextApp(QMainWindow):
         self.spin_size.setValue(kf.font_size)
         self.spin_opacity.setValue(kf.opacity)
         self.spin_rotation.setValue(kf.rotation)
+        ease_idx = self.ease_combo.findData(kf.easing)
+        self.ease_combo.setCurrentIndex(ease_idx if ease_idx >= 0 else self.ease_combo.findData("ease_in_out"))
         self.spin_outline.setValue(kf.outline_width)
 
         self.btn_color.setStyleSheet(
@@ -2404,6 +2448,7 @@ class GifTextApp(QMainWindow):
     def _block(self, b):
         for w in [self.txt_input, self.spin_size, self.spin_opacity,
                   self.spin_rotation, self.spin_outline, self.font_combo,
+                  self.ease_combo,
                   self.chk_bold, self.chk_italic, self.chk_upper, self.chk_shadow,
                   self.chk_bgbox, self.align_combo, self.spin_frame_in,
                   self.spin_frame_out, self.spin_fade_in, self.spin_fade_out,
@@ -2449,6 +2494,15 @@ class GifTextApp(QMainWindow):
         kf.opacity = self.spin_opacity.value()
         kf.rotation = self.spin_rotation.value()
         kf.outline_width = self.spin_outline.value()
+        self._schedule_snapshot()
+        self._update_all()
+
+    def _on_easing_changed(self):
+        if not self.selected_layer:
+            return
+        easing = self.ease_combo.currentData() or "ease_in_out"
+        kf = self._ensure_keyframe(self.selected_layer)
+        kf.easing = easing
         self._schedule_snapshot()
         self._update_all()
 
@@ -2513,6 +2567,7 @@ class GifTextApp(QMainWindow):
         kf.opacity = self.spin_opacity.value()
         kf.rotation = self.spin_rotation.value()
         kf.outline_width = self.spin_outline.value()
+        kf.easing = self.ease_combo.currentData() or "ease_in_out"
         layer.set_keyframe(kf)
         self._snapshot()
         self._update_all()

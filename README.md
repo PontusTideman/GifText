@@ -1,6 +1,6 @@
 # GifText
 
-![Version](https://img.shields.io/badge/version-v1.3.2-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-Python-lightgrey)
+![Version](https://img.shields.io/badge/version-v1.3.3-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-Python-lightgrey)
 
 Add animated text to GIFs for meme creation. Track text labels on moving subjects with keyframe-based animation and smooth interpolation.
 
@@ -12,6 +12,7 @@ Add animated text to GIFs for meme creation. Track text labels on moving subject
 - **OpenCV Motion Tracking** - Generate forward keyframes from the selected layer position with CSRT/KCF when available and optical-flow fallback
 - **Bezier Path Animation** - Draw a four-point path and generate editable position keyframes over a chosen frame span
 - **Motion Presets** - Generate editable Bounce, Wiggle, and Shake emphasis keyframes
+- **Easing Curve Picker** - Choose per-keyframe cubic Bezier timing curves for interpolation
 - **On-Canvas Editing** - Click to select text, drag to reposition, drag corner handle to resize
 - **Onion Skinning** - Ghost previous frame to track moving subjects
 - **Multiple Text Layers** - Color-coded with individual timing controls
