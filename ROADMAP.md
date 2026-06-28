@@ -89,13 +89,6 @@ else handles cleanly on desktop.
 
 ## Research-Driven Additions
 
-- [ ] P0 - Add structured diagnostics for load, project, recent-file, tracking, and export failures
-  Why: Current failures are status-bar-only, and recent-file persistence can fail silently.
-  Evidence: `GifText.py:2252`, `GifText.py:3058`, `GifText.py:3080`, `GifText.py:3138`.
-  Touches: `GifText.py`, diagnostics/logging module, README troubleshooting section
-  Acceptance: Exceptions produce a timestamped crash/error log, an in-app log panel entry, and a user-visible recovery message with the failed path/action.
-  Complexity: M
-
 - [ ] P0 - Version and validate `.giftext` project schema before applying state
   Why: Project files accept broad unvalidated JSON and have no migration path beyond the app version string.
   Evidence: `GifText.py:672`, `GifText.py:688`, `GifText.py:3017`; Rekapi actor/keyframe model; Web Animations keyframe format.

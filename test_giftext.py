@@ -7,6 +7,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from GifText import (
+    DiagnosticsRecorder,
     ExportWorker,
     GifTextApp,
     LoadGifWorker,
@@ -139,6 +140,38 @@ class PathAnimationTests(unittest.TestCase):
         self.assertEqual((shake[0].x, shake[0].y, shake[0].rotation), (0.5, 0.5, 0.0))
         self.assertEqual((shake[-1].x, shake[-1].y, shake[-1].rotation), (0.5, 0.5, 0.0))
         self.assertTrue(any((kf.x, kf.y) != (0.5, 0.5) for kf in shake[1:-1]))
+
+
+class DiagnosticsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_recorder_writes_timestamped_error_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = DiagnosticsRecorder(tmp)
+
+            line = recorder.record("error", "Load GIF", "decode failed", path="bad.gif")
+
+            self.assertIn("ERROR", line)
+            self.assertIn("Load GIF", line)
+            self.assertIn("bad.gif", line)
+            self.assertTrue(recorder.log_path.exists())
+            contents = recorder.log_path.read_text(encoding="utf-8")
+            self.assertIn("decode failed", contents)
+
+    def test_app_error_updates_panel_status_and_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            window = GifTextApp()
+            window.diagnostics = DiagnosticsRecorder(tmp)
+
+            window._show_error("Export", "write denied", path="out.gif", dialog=False)
+
+            self.assertIn("Export", window.diagnostics_view.toPlainText())
+            self.assertIn("out.gif", window.diagnostics_view.toPlainText())
+            self.assertIn("write denied", window.statusBar().currentMessage())
+            self.assertTrue(window.diagnostics.log_path.exists())
+            window.close()
 
 
 class PathAnimationAppTests(unittest.TestCase):

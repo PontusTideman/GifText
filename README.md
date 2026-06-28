@@ -1,6 +1,6 @@
 # GifText
 
-![Version](https://img.shields.io/badge/version-v1.3.6-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-Python-lightgrey)
+![Version](https://img.shields.io/badge/version-v1.3.7-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-Python-lightgrey)
 
 Add animated text to GIFs for meme creation. Track text labels on moving subjects with keyframe-based animation and smooth interpolation.
 
@@ -16,6 +16,7 @@ Add animated text to GIFs for meme creation. Track text labels on moving subject
 - **Staggered Text Reveal** - Reveal lines, words, or letters over time for animated captions
 - **Separate Stroke & Shadow Styling** - Tune stroke opacity plus shadow color/opacity independently
 - **Responsive Long Jobs** - GIF loading, tracking, and export run in cancellable background workers
+- **Structured Diagnostics** - Load, project, recent-file, tracking, and export failures write timestamped logs and appear in the in-app Diagnostics panel
 - **On-Canvas Editing** - Click to select text, drag to reposition, drag corner handle to resize
 - **Onion Skinning** - Ghost previous frame to track moving subjects
 - **Multiple Text Layers** - Color-coded with individual timing controls
@@ -89,6 +90,10 @@ Dependencies:
 ```
 
 The executable is written to `dist\GifText.exe`.
+
+## Troubleshooting
+
+Failures are shown in the status bar, written to the right-side Diagnostics panel, and appended to timestamped logs under `%USERPROFILE%\.giftext\logs\`.
 
 ## License
 

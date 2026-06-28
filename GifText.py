@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GifText v1.3.6 - Animated GIF Text Editor
+GifText v1.3.7 - Animated GIF Text Editor
 Full-featured meme text animator with keyframe animation, onion skinning,
 undo/redo, project save/load, drag-resize, text presets, and more.
 """
@@ -13,6 +13,8 @@ import os
 import math
 import json
 import re
+import traceback
+from datetime import datetime
 from pathlib import Path
 
 
@@ -36,7 +38,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QSlider, QSpinBox, QDoubleSpinBox, QComboBox,
     QColorDialog, QFileDialog, QFrame, QSplitter, QCheckBox,
     QFontComboBox, QGroupBox, QGridLayout, QSizePolicy, QScrollArea,
-    QPlainTextEdit, QMenu
+    QPlainTextEdit, QMenu, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QSize, QMimeData, QObject, QThread, pyqtSlot
 from PyQt6.QtGui import (
@@ -47,7 +49,7 @@ from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 
-VERSION = "1.3.6"
+VERSION = "1.3.7"
 
 LAYER_COLORS = [
     "#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7",
@@ -231,6 +233,30 @@ def apply_staggered_text(text, mode, frame, start_frame, frames_per_unit):
         return "".join(output).rstrip()
 
     return text
+
+
+class DiagnosticsRecorder:
+    def __init__(self, log_dir=None):
+        base_dir = Path(log_dir) if log_dir else Path.home() / ".giftext" / "logs"
+        self.log_dir = base_dir
+        self.log_path = base_dir / f"errors-{datetime.now().strftime('%Y%m%d')}.log"
+
+    def record(self, level, action, message, path=None, exc=None):
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        parts = [timestamp, level.upper(), action, message]
+        if path:
+            parts.append(f"path={path}")
+        line = " | ".join(str(part) for part in parts if part)
+        if exc is not None:
+            line = f"{line}\n{traceback.format_exception_only(type(exc), exc)[-1].strip()}"
+            trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            line = f"{line}\n{trace.rstrip()}"
+
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.log_path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        return line
+
 
 DARK_STYLE = """
 QMainWindow, QWidget {
@@ -1884,6 +1910,8 @@ class GifTextApp(QMainWindow):
         self.active_work_label = ""
         self.pending_project_payload = None
         self.pending_tracking_layer_id = None
+        self.diagnostics = DiagnosticsRecorder()
+        self.diagnostic_lines: list[str] = []
 
         self.playing = False
         self.play_speed = 1.0
@@ -1897,6 +1925,7 @@ class GifTextApp(QMainWindow):
         self._load_recent()
 
         self._build_ui()
+        self._flush_diagnostic_panel()
 
     def _build_ui(self):
         central = QWidget()
@@ -2475,6 +2504,18 @@ class GifTextApp(QMainWindow):
         tmgl.addWidget(self.spin_stagger_frames, tr, 1)
         rl.addWidget(tmg)
 
+        diag_group = QGroupBox("Diagnostics")
+        diag_layout = QVBoxLayout(diag_group)
+        diag_layout.setContentsMargins(10, 10, 10, 10)
+        diag_layout.setSpacing(8)
+        self.diagnostics_view = QPlainTextEdit()
+        self.diagnostics_view.setReadOnly(True)
+        self.diagnostics_view.setMaximumBlockCount(80)
+        self.diagnostics_view.setMaximumHeight(118)
+        self.diagnostics_view.setPlaceholderText("No diagnostics yet")
+        diag_layout.addWidget(self.diagnostics_view)
+        rl.addWidget(diag_group)
+
         rl.addStretch()
         right_scroll.setWidget(right_inner)
         splitter.addWidget(right_scroll)
@@ -2489,6 +2530,38 @@ class GifTextApp(QMainWindow):
     # ================================================================
     #  Helpers
     # ================================================================
+
+    def _record_diagnostic(self, level, action, message, path=None, exc=None):
+        try:
+            line = self.diagnostics.record(level, action, message, path, exc)
+        except Exception as log_exc:
+            timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+            line = f"{timestamp} | ERROR | Diagnostics logging | {log_exc}"
+        self.diagnostic_lines.append(line)
+        if hasattr(self, "diagnostics_view"):
+            self._flush_diagnostic_panel()
+        return line
+
+    def _flush_diagnostic_panel(self):
+        if not hasattr(self, "diagnostics_view"):
+            return
+        self.diagnostics_view.setPlainText("\n\n".join(self.diagnostic_lines[-80:]))
+        scrollbar = self.diagnostics_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _show_error(self, action, message, path=None, exc=None, dialog=True):
+        self._record_diagnostic("error", action, message, path, exc)
+        path_note = f" ({path})" if path else ""
+        recovery = f"{action} failed{path_note}: {message}"
+        self.statusBar().showMessage(recovery)
+        if dialog and self.isVisible():
+            QMessageBox.warning(self, f"{action} failed", recovery)
+
+    def _active_worker_path(self):
+        worker = self.active_worker
+        if worker is None:
+            return None
+        return getattr(worker, "path", None)
 
     def _reset_document_state(self):
         self.playing = False
@@ -2613,13 +2686,18 @@ class GifTextApp(QMainWindow):
         self.statusBar().showMessage(f"{message} ({percent}%)")
 
     def _on_worker_failed(self, message):
+        label = self.active_work_label or "Background work"
+        path = self._active_worker_path()
         self.pending_project_payload = None
         self.pending_tracking_layer_id = None
-        self.statusBar().showMessage(f"{self.active_work_label} error: {message}")
+        self._show_error(label, message, path=path)
 
     def _on_worker_canceled(self):
+        label = self.active_work_label or "Background work"
+        path = self._active_worker_path()
         self.pending_project_payload = None
         self.pending_tracking_layer_id = None
+        self._record_diagnostic("warning", label, "Canceled by user", path=path)
         self.statusBar().showMessage(f"{self.active_work_label} canceled")
 
     # ================================================================
@@ -2689,7 +2767,7 @@ class GifTextApp(QMainWindow):
                 self.statusBar().showMessage(f"Loaded {os.path.basename(self.gif_path)}")
         except Exception as e:
             self.pending_project_payload = None
-            self.statusBar().showMessage(f"Error: {e}")
+            self._show_error("Apply GIF", str(e), path=data.get("path"), exc=e)
 
     # ================================================================
     #  Playback
@@ -3471,9 +3549,12 @@ class GifTextApp(QMainWindow):
             "gif_relpath": rel_path,
             "layers": [l.to_dict() for l in self.layers],
         }
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(project, f, indent=2, ensure_ascii=False)
-        self.statusBar().showMessage(f"Project saved: {os.path.basename(path)}")
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(project, f, indent=2, ensure_ascii=False)
+            self.statusBar().showMessage(f"Project saved: {os.path.basename(path)}")
+        except Exception as e:
+            self._show_error("Save project", str(e), path=path, exc=e)
 
     def _load_project(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -3494,13 +3575,13 @@ class GifTextApp(QMainWindow):
                 candidates.append(os.path.join(os.path.dirname(path), os.path.basename(gif_path)))
             gif_path = next((candidate for candidate in candidates if candidate and os.path.exists(candidate)), "")
             if not gif_path:
-                self.statusBar().showMessage("GIF not found for this project file")
+                self._show_error("Load project", "GIF not found for this project file", path=path, dialog=False)
                 return
 
             project["project_path"] = path
             self._load_gif_from_path(gif_path, project)
         except Exception as e:
-            self.statusBar().showMessage(f"Error loading project: {e}")
+            self._show_error("Load project", str(e), path=path, exc=e)
 
     # ================================================================
     #  Recent Files
@@ -3511,10 +3592,15 @@ class GifTextApp(QMainWindow):
 
     def _load_recent(self):
         try:
-            with open(self._recent_path(), encoding='utf-8') as f:
+            recent_path = self._recent_path()
+            if not os.path.exists(recent_path):
+                self._recent_files = []
+                return
+            with open(recent_path, encoding='utf-8') as f:
                 self._recent_files = json.load(f)[:10]
-        except Exception:
+        except Exception as e:
             self._recent_files = []
+            self._record_diagnostic("error", "Load recent files", str(e), path=self._recent_path(), exc=e)
 
     def _add_recent(self, path):
         path = os.path.abspath(path)
@@ -3524,8 +3610,9 @@ class GifTextApp(QMainWindow):
         try:
             with open(self._recent_path(), 'w', encoding='utf-8') as f:
                 json.dump(self._recent_files, f, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as e:
+            self._record_diagnostic("error", "Save recent files", str(e), path=self._recent_path(), exc=e)
+            self.statusBar().showMessage(f"Recent files could not be saved: {e}")
 
     # ================================================================
     #  Export
