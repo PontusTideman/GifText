@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 
 import os
+import tempfile
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from GifText import (
+    ExportWorker,
     GifTextApp,
+    LoadGifWorker,
     TextKeyframe,
     TextLayer,
     apply_easing_curve,
     apply_staggered_text,
     build_effect_keyframes,
     build_path_keyframes,
+    render_text_pil,
     sample_cubic_path,
 )
+from PIL import Image
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QApplication
 
@@ -213,6 +218,59 @@ class PathAnimationAppTests(unittest.TestCase):
         self.assertAlmostEqual(layer.get_keyframe_at(0).outline_opacity, 0.45)
         self.assertAlmostEqual(layer.get_keyframe_at(0).shadow_opacity, 0.25)
         window.close()
+
+
+class WorkerTests(unittest.TestCase):
+    def test_load_worker_decodes_generated_gif(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tiny.gif")
+            frames = [
+                Image.new("RGBA", (8, 8), (255, 0, 0, 255)),
+                Image.new("RGBA", (8, 8), (0, 255, 0, 255)),
+            ]
+            frames[0].save(path, save_all=True, append_images=frames[1:], duration=[40, 60], loop=0)
+            worker = LoadGifWorker(path)
+            results = []
+            failures = []
+            worker.finished.connect(results.append)
+            worker.failed.connect(failures.append)
+
+            worker.run()
+
+            self.assertEqual(failures, [])
+            self.assertEqual(results[0]["width"], 8)
+            self.assertEqual(len(results[0]["pil_frames"]), 2)
+            self.assertEqual(len(results[0]["frame_bytes"]), 2)
+
+    def test_export_worker_writes_gif_without_mutating_layer_counter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "out.gif")
+            frame = Image.new("RGBA", (48, 32), (10, 10, 10, 255))
+            layer = TextLayer("worker")
+            layer.keyframes[0].x = 0.5
+            layer.keyframes[0].y = 0.5
+            before_counter = TextLayer._counter
+            worker = ExportWorker([frame, frame], [layer.to_dict()], [30, 30], 2, output, ".gif")
+            results = []
+            failures = []
+            worker.finished.connect(results.append)
+            worker.failed.connect(failures.append)
+
+            worker.run()
+
+            self.assertEqual(failures, [])
+            self.assertTrue(os.path.exists(output))
+            self.assertEqual(results, [output])
+            self.assertEqual(TextLayer._counter, before_counter)
+
+    def test_shared_renderer_draws_text(self):
+        frame = Image.new("RGBA", (64, 48), (0, 0, 0, 0))
+        layer = TextLayer("Hi")
+
+        rendered = render_text_pil(frame, layer, 0, 1)
+
+        self.assertIsNot(rendered, frame)
+        self.assertGreater(rendered.getbbox()[2], 0)
 
 
 if __name__ == "__main__":

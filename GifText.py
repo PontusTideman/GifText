@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GifText v1.3.5 - Animated GIF Text Editor
+GifText v1.3.6 - Animated GIF Text Editor
 Full-featured meme text animator with keyframe animation, onion skinning,
 undo/redo, project save/load, drag-resize, text presets, and more.
 """
@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
     QFontComboBox, QGroupBox, QGridLayout, QSizePolicy, QScrollArea,
     QPlainTextEdit, QMenu
 )
-from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QSize, QMimeData
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QSize, QMimeData, QObject, QThread, pyqtSlot
 from PyQt6.QtGui import (
     QIcon, QPixmap, QImage, QColor, QPainter, QFont, QPen, QBrush,
     QFontMetrics, QPainterPath, QCursor, QWheelEvent, QAction, QLinearGradient
@@ -47,7 +47,7 @@ from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 
-VERSION = "1.3.5"
+VERSION = "1.3.6"
 
 LAYER_COLORS = [
     "#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7",
@@ -760,6 +760,373 @@ class UndoManager:
     def can_undo(self): return self._index > 0
     @property
     def can_redo(self): return self._index < len(self._history) - 1
+
+
+# ============================================================================
+#  Render / Worker Helpers
+# ============================================================================
+
+def get_pil_font(layer, size):
+    family = layer.font_family.lower().replace(' ', '')
+    candidates = []
+    if layer.bold and layer.italic:
+        candidates += [f"{family}bi.ttf", f"{family}z.ttf"]
+    if layer.bold:
+        candidates += [f"{family}bd.ttf", f"{family}b.ttf"]
+    if layer.italic:
+        candidates.append(f"{family}i.ttf")
+    candidates.append(f"{family}.ttf")
+    candidates += ["impact.ttf", "arialbd.ttf", "arial.ttf"]
+    for name in candidates:
+        try:
+            return ImageFont.truetype(f"C:/Windows/Fonts/{name}", size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def render_text_pil(frame, layer, frame_idx, total_frames):
+    kf = layer.get_interpolated(frame_idx)
+    text = layer.text.upper() if layer.uppercase else layer.text
+    text = apply_staggered_text(text, layer.stagger_mode, frame_idx,
+                                layer.frame_in, layer.stagger_frames)
+    if not text:
+        return frame
+
+    fade = layer.get_fade_opacity(frame_idx, total_frames)
+    effective_alpha = int(kf.opacity * fade * 255)
+    if effective_alpha <= 0:
+        return frame
+
+    overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font = get_pil_font(layer, kf.font_size)
+
+    lines = text.split('\n')
+    line_sizes = []
+    total_h = 0
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        line_sizes.append((lw, lh))
+        total_h += lh
+
+    cx = kf.x * frame.width
+    cy = kf.y * frame.height
+    y_cursor = cy - total_h / 2
+
+    text_rgb = tuple(int(kf.color[i:i+2], 16) for i in (1, 3, 5))
+    outline_rgb = tuple(int(kf.outline_color[i:i+2], 16) for i in (1, 3, 5))
+    shadow_rgb = tuple(int(kf.shadow_color[i:i+2], 16) for i in (1, 3, 5))
+    outline_alpha = int(effective_alpha * kf.outline_opacity)
+    shadow_alpha = int(effective_alpha * kf.shadow_opacity)
+
+    if layer.bg_box:
+        max_lw = max(s[0] for s in line_sizes)
+        box_rect = [cx - max_lw / 2 - 8, cy - total_h / 2 - 8,
+                    cx + max_lw / 2 + 8, cy + total_h / 2 + 8]
+        draw.rounded_rectangle(box_rect, radius=4,
+                               fill=(0, 0, 0, int(160 * kf.opacity * fade)))
+
+    for i, line in enumerate(lines):
+        lw, lh = line_sizes[i]
+        max_w = max(s[0] for s in line_sizes)
+        if layer.alignment == "center":
+            lx = cx - lw / 2
+        elif layer.alignment == "left":
+            lx = cx - max_w / 2
+        else:
+            lx = cx + max_w / 2 - lw
+
+        if kf.outline_width > 0:
+            try:
+                draw.text((lx, y_cursor), line, font=font,
+                          fill=(*outline_rgb, outline_alpha),
+                          stroke_width=kf.outline_width,
+                          stroke_fill=(*outline_rgb, outline_alpha))
+            except TypeError:
+                ow = kf.outline_width
+                for dx in range(-ow, ow + 1):
+                    for dy in range(-ow, ow + 1):
+                        if dx * dx + dy * dy <= ow * ow:
+                            draw.text((lx + dx, y_cursor + dy), line, font=font,
+                                      fill=(*outline_rgb, outline_alpha))
+
+        if layer.shadow:
+            draw.text((lx + 2, y_cursor + 2), line, font=font,
+                      fill=(*shadow_rgb, shadow_alpha))
+
+        draw.text((lx, y_cursor), line, font=font, fill=(*text_rgb, effective_alpha))
+        y_cursor += lh
+
+    if kf.rotation != 0:
+        overlay = overlay.rotate(-kf.rotation, center=(cx, cy),
+                                 resample=Image.Resampling.BICUBIC, expand=False)
+
+    return Image.alpha_composite(frame, overlay)
+
+
+class CancelableWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+    canceled = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def _is_canceled(self):
+        return self._cancel_requested
+
+
+class LoadGifWorker(CancelableWorker):
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            with Image.open(self.path) as img:
+                if not hasattr(img, 'n_frames') or img.n_frames < 2:
+                    self.failed.emit("Not animated (needs 2+ frames)")
+                    return
+
+                pil_frames = []
+                frame_bytes = []
+                durations = []
+                total = img.n_frames
+                width = img.width
+                height = img.height
+                for i in range(total):
+                    if self._is_canceled():
+                        self.canceled.emit()
+                        return
+                    img.seek(i)
+                    frame = img.convert("RGBA")
+                    pil_frames.append(frame.copy())
+                    frame_bytes.append(frame.tobytes("raw", "RGBA"))
+                    durations.append(max(img.info.get('duration', 100), 20))
+                    self.progress.emit(int((i + 1) / total * 100), f"Loading frame {i + 1} of {total}")
+
+                self.finished.emit({
+                    "path": self.path,
+                    "width": width,
+                    "height": height,
+                    "pil_frames": pil_frames,
+                    "frame_bytes": frame_bytes,
+                    "durations": durations,
+                })
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class TrackingWorker(CancelableWorker):
+    def __init__(self, pil_frames, start_frame, rx, ry):
+        super().__init__()
+        self.pil_frames = list(pil_frames)
+        self.start_frame = start_frame
+        self.rx = rx
+        self.ry = ry
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            self.pil_frames = [frame.copy() for frame in self.pil_frames]
+            positions = self._track_positions_with_object_tracker()
+            if self._is_canceled():
+                self.canceled.emit()
+                return
+            if len(positions) < 2:
+                positions = self._track_positions_with_optical_flow()
+            if self._is_canceled():
+                self.canceled.emit()
+                return
+            self.finished.emit(positions)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    def _cv_bgr_frame(self, frame_idx):
+        rgb = np.asarray(self.pil_frames[frame_idx].convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    def _cv_gray_frame(self, frame_idx):
+        rgb = np.asarray(self.pil_frames[frame_idx].convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+    def _create_cv_tracker(self):
+        factories = [
+            ("TrackerCSRT_create", getattr(cv2, "TrackerCSRT_create", None)),
+            ("TrackerKCF_create", getattr(cv2, "TrackerKCF_create", None)),
+        ]
+        legacy = getattr(cv2, "legacy", None)
+        if legacy is not None:
+            factories.extend([
+                ("legacy.TrackerCSRT_create", getattr(legacy, "TrackerCSRT_create", None)),
+                ("legacy.TrackerKCF_create", getattr(legacy, "TrackerKCF_create", None)),
+            ])
+        for _name, factory in factories:
+            if factory is None:
+                continue
+            try:
+                return factory()
+            except Exception:
+                continue
+        return None
+
+    def _track_positions_with_object_tracker(self):
+        tracker = self._create_cv_tracker()
+        if tracker is None:
+            return []
+        first = self._cv_bgr_frame(self.start_frame)
+        h, w = first.shape[:2]
+        box_w = max(12, int(w * 0.12))
+        box_h = max(12, int(h * 0.12))
+        cx = int(self.rx * w)
+        cy = int(self.ry * h)
+        x = max(0, min(w - box_w, cx - box_w // 2))
+        y = max(0, min(h - box_h, cy - box_h // 2))
+        bbox = (x, y, box_w, box_h)
+        try:
+            initialized = tracker.init(first, bbox)
+        except Exception:
+            return []
+        if not initialized:
+            return []
+
+        positions = [(self.start_frame, self.rx, self.ry)]
+        total = len(self.pil_frames)
+        for frame_idx in range(self.start_frame + 1, total):
+            if self._is_canceled():
+                return positions
+            ok, tracked_box = tracker.update(self._cv_bgr_frame(frame_idx))
+            if not ok:
+                break
+            x, y, bw, bh = tracked_box
+            tx = (x + bw / 2) / max(1, w)
+            ty = (y + bh / 2) / max(1, h)
+            if not (math.isfinite(tx) and math.isfinite(ty)):
+                break
+            positions.append((frame_idx, max(0.0, min(1.0, tx)), max(0.0, min(1.0, ty))))
+            self.progress.emit(int((frame_idx + 1) / total * 100), f"Tracking frame {frame_idx + 1} of {total}")
+        return positions
+
+    def _track_positions_with_optical_flow(self):
+        first = self._cv_gray_frame(self.start_frame)
+        h, w = first.shape[:2]
+        point = np.array([[[self.rx * w, self.ry * h]]], dtype=np.float32)
+        positions = [(self.start_frame, self.rx, self.ry)]
+        prev = first
+        total = len(self.pil_frames)
+
+        criteria = (
+            cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+            24,
+            0.01,
+        )
+        for frame_idx in range(self.start_frame + 1, total):
+            if self._is_canceled():
+                return positions
+            nxt = self._cv_gray_frame(frame_idx)
+            next_point, status, _err = cv2.calcOpticalFlowPyrLK(
+                prev,
+                nxt,
+                point,
+                None,
+                winSize=(31, 31),
+                maxLevel=3,
+                criteria=criteria,
+            )
+            if next_point is None or status is None or status[0][0] != 1:
+                break
+            x, y = next_point[0][0]
+            if not (math.isfinite(float(x)) and math.isfinite(float(y))):
+                break
+            if x < 0 or y < 0 or x >= w or y >= h:
+                break
+            positions.append((frame_idx, float(x) / max(1, w), float(y) / max(1, h)))
+            prev = nxt
+            point = next_point.reshape(1, 1, 2)
+            self.progress.emit(int((frame_idx + 1) / total * 100), f"Tracking frame {frame_idx + 1} of {total}")
+        return positions
+
+
+class ExportWorker(CancelableWorker):
+    def __init__(self, pil_frames, layers_payload, frame_durations, total_frames, path, ext):
+        super().__init__()
+        self.pil_frames = [frame.copy() for frame in pil_frames]
+        self.layers_payload = layers_payload
+        self.frame_durations = list(frame_durations)
+        self.total_frames = total_frames
+        self.path = path
+        self.ext = ext
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            old_counter = TextLayer._counter
+            try:
+                layers = [TextLayer.from_dict(d) for d in self.layers_payload]
+            finally:
+                TextLayer._counter = old_counter
+            rendered = []
+            total = len(self.pil_frames)
+            for i, pil_frame in enumerate(self.pil_frames):
+                if self._is_canceled():
+                    self.canceled.emit()
+                    return
+                frame = pil_frame.copy()
+                for layer in layers:
+                    if not layer.is_visible_at(i, self.total_frames):
+                        continue
+                    frame = render_text_pil(frame, layer, i, self.total_frames)
+                rendered.append(frame)
+                self.progress.emit(int((i + 1) / total * 70), f"Rendering frame {i + 1} of {total}")
+
+            if self._is_canceled():
+                self.canceled.emit()
+                return
+
+            if self.ext == '.webp':
+                frames = [f.convert("RGBA") for f in rendered]
+                frames[0].save(
+                    self.path, save_all=True, append_images=frames[1:],
+                    duration=self.frame_durations, loop=0, lossless=False, quality=85
+                )
+                output = self.path
+            elif self.ext == '.png':
+                base = os.path.splitext(self.path)[0]
+                written = []
+                for i, frame in enumerate(rendered):
+                    if self._is_canceled():
+                        for filename in written:
+                            try:
+                                os.remove(filename)
+                            except OSError:
+                                pass
+                        self.canceled.emit()
+                        return
+                    filename = f"{base}_{i:04d}.png"
+                    frame.save(filename)
+                    written.append(filename)
+                    self.progress.emit(70 + int((i + 1) / total * 30), f"Saving PNG {i + 1} of {total}")
+                output = f"{base}_0000.png"
+            else:
+                frames = [f.convert("RGB") for f in rendered]
+                frames[0].save(
+                    self.path, save_all=True, append_images=frames[1:],
+                    duration=self.frame_durations, loop=0, optimize=False
+                )
+                output = self.path
+
+            self.progress.emit(100, "Export complete")
+            self.finished.emit(output)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 # ============================================================================
@@ -1512,6 +1879,11 @@ class GifTextApp(QMainWindow):
         self.selected_layer: TextLayer | None = None
         self.undo_mgr = UndoManager()
         self.path_capture_layer_id: int | None = None
+        self.active_worker: CancelableWorker | None = None
+        self.active_thread: QThread | None = None
+        self.active_work_label = ""
+        self.pending_project_payload = None
+        self.pending_tracking_layer_id = None
 
         self.playing = False
         self.play_speed = 1.0
@@ -1621,6 +1993,14 @@ class GifTextApp(QMainWindow):
         self.btn_redo.clicked.connect(self._redo)
         self.btn_redo.setEnabled(False)
         utility_row.addWidget(self.btn_redo)
+
+        self.btn_cancel_work = QPushButton("Cancel Work")
+        self.btn_cancel_work.setObjectName("danger")
+        self.btn_cancel_work.setMinimumHeight(36)
+        self.btn_cancel_work.clicked.connect(self._cancel_active_worker)
+        self.btn_cancel_work.setVisible(False)
+        self.btn_cancel_work.setEnabled(False)
+        utility_row.addWidget(self.btn_cancel_work)
 
         utility_row.addStretch()
 
@@ -2186,6 +2566,62 @@ class GifTextApp(QMainWindow):
         ] + self.effect_buttons:
             widget.setEnabled(enabled)
 
+    def _start_worker(self, label, worker, finished_handler):
+        if self.active_worker is not None:
+            self.statusBar().showMessage(f"{self.active_work_label} already running")
+            return False
+        self.active_worker = worker
+        self.active_work_label = label
+        self.active_thread = QThread(self)
+        worker.moveToThread(self.active_thread)
+        self.active_thread.started.connect(worker.run)
+        worker.progress.connect(self._on_worker_progress)
+        worker.finished.connect(finished_handler)
+        worker.failed.connect(self._on_worker_failed)
+        worker.canceled.connect(self._on_worker_canceled)
+        worker.finished.connect(lambda _result: self._finish_worker_thread())
+        worker.failed.connect(lambda _message: self._finish_worker_thread())
+        worker.canceled.connect(self._finish_worker_thread)
+        self.btn_cancel_work.setVisible(True)
+        self.btn_cancel_work.setEnabled(True)
+        self.statusBar().showMessage(f"{label} started")
+        self.active_thread.start()
+        return True
+
+    def _finish_worker_thread(self):
+        thread = self.active_thread
+        worker = self.active_worker
+        self.active_worker = None
+        self.active_thread = None
+        self.active_work_label = ""
+        self.btn_cancel_work.setEnabled(False)
+        self.btn_cancel_work.setVisible(False)
+        if thread is not None:
+            thread.quit()
+            thread.finished.connect(thread.deleteLater)
+        if worker is not None:
+            worker.deleteLater()
+
+    def _cancel_active_worker(self):
+        if self.active_worker is None:
+            return
+        self.active_worker.cancel()
+        self.btn_cancel_work.setEnabled(False)
+        self.statusBar().showMessage(f"Canceling {self.active_work_label}...")
+
+    def _on_worker_progress(self, percent, message):
+        self.statusBar().showMessage(f"{message} ({percent}%)")
+
+    def _on_worker_failed(self, message):
+        self.pending_project_payload = None
+        self.pending_tracking_layer_id = None
+        self.statusBar().showMessage(f"{self.active_work_label} error: {message}")
+
+    def _on_worker_canceled(self):
+        self.pending_project_payload = None
+        self.pending_tracking_layer_id = None
+        self.statusBar().showMessage(f"{self.active_work_label} canceled")
+
     # ================================================================
     #  GIF Loading
     # ================================================================
@@ -2197,35 +2633,26 @@ class GifTextApp(QMainWindow):
         if path:
             self._load_gif_from_path(path)
 
-    def _load_gif_from_path(self, path):
+    def _load_gif_from_path(self, path, project_payload=None):
+        if self._start_worker("Load GIF", LoadGifWorker(path), self._on_gif_loaded):
+            self.pending_project_payload = project_payload
+
+    def _on_gif_loaded(self, data):
         try:
-            img = Image.open(path)
-            if not hasattr(img, 'n_frames') or img.n_frames < 2:
-                self.statusBar().showMessage("Not animated (needs 2+ frames)")
-                return
-
             new_frames: list[QPixmap] = []
-            new_pil_frames: list[Image.Image] = []
-            new_durations: list[int] = []
-            new_width = img.width
-            new_height = img.height
-
-            for i in range(img.n_frames):
-                img.seek(i)
-                frame = img.convert("RGBA")
-                new_pil_frames.append(frame.copy())
-                new_durations.append(max(img.info.get('duration', 100), 20))
-                data = frame.tobytes("raw", "RGBA")
-                qimg = QImage(data, frame.width, frame.height, QImage.Format.Format_RGBA8888)
+            new_width = data["width"]
+            new_height = data["height"]
+            for frame_bytes in data["frame_bytes"]:
+                qimg = QImage(frame_bytes, new_width, new_height, QImage.Format.Format_RGBA8888)
                 new_frames.append(QPixmap.fromImage(qimg.copy()))
 
             self._reset_document_state()
             self.gif_frames = new_frames
-            self.gif_pil_frames = new_pil_frames
-            self.frame_durations = new_durations
+            self.gif_pil_frames = data["pil_frames"]
+            self.frame_durations = data["durations"]
             self.gif_width = new_width
             self.gif_height = new_height
-            self.gif_path = path
+            self.gif_path = data["path"]
             self.total_frames = len(self.gif_frames)
             self.current_frame = 0
             self.frame_slider.blockSignals(True)
@@ -2241,15 +2668,27 @@ class GifTextApp(QMainWindow):
             self.btn_save_proj.setEnabled(True)
             self.layer_timeline.total_frames = self.total_frames
             self._rebuild_layer_list()
-            self.info_label.setText(f"{self.gif_width}x{self.gif_height} | {self.total_frames}f | {os.path.basename(path)}")
+            self.info_label.setText(f"{self.gif_width}x{self.gif_height} | {self.total_frames}f | {os.path.basename(self.gif_path)}")
             self.hint_label.setText("Add a text layer, drag it on the stage, then step through frames.")
             self._refresh_chrome_state()
 
-            self._add_recent(path)
+            self._add_recent(self.gif_path)
+            project_payload = self.pending_project_payload
+            self.pending_project_payload = None
+            if project_payload is not None:
+                TextLayer._counter = 0
+                self.layers = [TextLayer.from_dict(d) for d in project_payload.get("layers", [])]
+                self.selected_layer = self.layers[0] if self.layers else None
+                self._rebuild_layer_list()
+
             self._snapshot()
             self._update_all()
-            self.statusBar().showMessage(f"Loaded {os.path.basename(path)}")
+            if project_payload is not None:
+                self.statusBar().showMessage(f"Project loaded: {os.path.basename(project_payload.get('project_path', 'project'))}")
+            else:
+                self.statusBar().showMessage(f"Loaded {os.path.basename(self.gif_path)}")
         except Exception as e:
+            self.pending_project_payload = None
             self.statusBar().showMessage(f"Error: {e}")
 
     # ================================================================
@@ -2823,7 +3262,19 @@ class GifTextApp(QMainWindow):
 
         layer = self.selected_layer
         seed = self._ensure_keyframe(layer)
-        positions = self._track_positions_from_point(self.current_frame, seed.x, seed.y)
+        self.pending_tracking_layer_id = layer.id
+        self._start_worker(
+            "Track Forward",
+            TrackingWorker(self.gif_pil_frames, self.current_frame, seed.x, seed.y),
+            self._on_tracking_finished,
+        )
+
+    def _on_tracking_finished(self, positions):
+        layer = next((l for l in self.layers if l.id == self.pending_tracking_layer_id), None)
+        self.pending_tracking_layer_id = None
+        if layer is None:
+            self.statusBar().showMessage("Tracking finished but the layer no longer exists")
+            return
         if len(positions) < 2:
             self.statusBar().showMessage("Tracking lost the point before a new keyframe could be made")
             return
@@ -3046,15 +3497,8 @@ class GifTextApp(QMainWindow):
                 self.statusBar().showMessage("GIF not found for this project file")
                 return
 
-            self._load_gif_from_path(gif_path)
-            TextLayer._counter = 0
-            self.layers = [TextLayer.from_dict(d) for d in project.get("layers", [])]
-            self.selected_layer = self.layers[0] if self.layers else None
-            self.undo_mgr.clear()
-            self._snapshot()
-            self._rebuild_layer_list()
-            self._update_all()
-            self.statusBar().showMessage(f"Project loaded: {os.path.basename(path)}")
+            project["project_path"] = path
+            self._load_gif_from_path(gif_path, project)
         except Exception as e:
             self.statusBar().showMessage(f"Error loading project: {e}")
 
@@ -3101,141 +3545,25 @@ class GifTextApp(QMainWindow):
             return
         path, ext = self._resolve_export_target(path, filt)
 
-        self.statusBar().showMessage("Exporting...")
-        QApplication.processEvents()
+        layers_payload = [l.to_dict() for l in self.layers]
+        worker = ExportWorker(
+            self.gif_pil_frames,
+            layers_payload,
+            self.frame_durations,
+            self.total_frames,
+            path,
+            ext,
+        )
+        self._start_worker("Export", worker, self._on_export_finished)
 
-        try:
-            rendered = []
-            for i, pil_frame in enumerate(self.gif_pil_frames):
-                frame = pil_frame.copy()
-                for layer in self.layers:
-                    if not layer.is_visible_at(i, self.total_frames):
-                        continue
-                    frame = self._render_text_pil(frame, layer, i)
-                rendered.append(frame)
-
-            if ext == '.webp':
-                rgb_frames = [f.convert("RGBA") for f in rendered]
-                rgb_frames[0].save(
-                    path, save_all=True, append_images=rgb_frames[1:],
-                    duration=self.frame_durations, loop=0, lossless=False, quality=85
-                )
-            elif ext == '.png':
-                # PNG sequence
-                base = os.path.splitext(path)[0]
-                for i, frame in enumerate(rendered):
-                    frame.save(f"{base}_{i:04d}.png")
-                self.statusBar().showMessage(f"Exported PNG sequence: {os.path.basename(base)}_0000.png")
-                return
-            else:
-                rgb_frames = [f.convert("RGB") for f in rendered]
-                rgb_frames[0].save(
-                    path, save_all=True, append_images=rgb_frames[1:],
-                    duration=self.frame_durations, loop=0, optimize=False
-                )
-
-            self.statusBar().showMessage(f"Exported: {os.path.basename(path)}")
-        except Exception as e:
-            self.statusBar().showMessage(f"Export error: {e}")
+    def _on_export_finished(self, output_path):
+        self.statusBar().showMessage(f"Exported: {os.path.basename(output_path)}")
 
     def _render_text_pil(self, frame, layer, frame_idx):
-        kf = layer.get_interpolated(frame_idx)
-        text = layer.text.upper() if layer.uppercase else layer.text
-        text = apply_staggered_text(text, layer.stagger_mode, frame_idx,
-                                    layer.frame_in, layer.stagger_frames)
-        if not text:
-            return frame
-
-        fade = layer.get_fade_opacity(frame_idx, self.total_frames)
-        effective_alpha = int(kf.opacity * fade * 255)
-        if effective_alpha <= 0:
-            return frame
-
-        overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        font = self._get_pil_font(layer, kf.font_size)
-
-        lines = text.split('\n')
-        line_sizes = []
-        total_h = 0
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            line_sizes.append((lw, lh))
-            total_h += lh
-
-        cx = kf.x * frame.width
-        cy = kf.y * frame.height
-        y_cursor = cy - total_h / 2
-
-        text_rgb = tuple(int(kf.color[i:i+2], 16) for i in (1, 3, 5))
-        outline_rgb = tuple(int(kf.outline_color[i:i+2], 16) for i in (1, 3, 5))
-        shadow_rgb = tuple(int(kf.shadow_color[i:i+2], 16) for i in (1, 3, 5))
-        outline_alpha = int(effective_alpha * kf.outline_opacity)
-        shadow_alpha = int(effective_alpha * kf.shadow_opacity)
-
-        # Background box
-        if layer.bg_box:
-            max_lw = max(s[0] for s in line_sizes)
-            box_rect = [cx - max_lw / 2 - 8, cy - total_h / 2 - 8,
-                        cx + max_lw / 2 + 8, cy + total_h / 2 + 8]
-            draw.rounded_rectangle(box_rect, radius=4,
-                                   fill=(0, 0, 0, int(160 * kf.opacity * fade)))
-
-        for i, line in enumerate(lines):
-            lw, lh = line_sizes[i]
-            max_w = max(s[0] for s in line_sizes)
-            if layer.alignment == "center":
-                lx = cx - lw / 2
-            elif layer.alignment == "left":
-                lx = cx - max_w / 2
-            else:
-                lx = cx + max_w / 2 - lw
-
-            if kf.outline_width > 0:
-                try:
-                    draw.text((lx, y_cursor), line, font=font,
-                              fill=(*outline_rgb, outline_alpha),
-                              stroke_width=kf.outline_width,
-                              stroke_fill=(*outline_rgb, outline_alpha))
-                except TypeError:
-                    ow = kf.outline_width
-                    for dx in range(-ow, ow + 1):
-                        for dy in range(-ow, ow + 1):
-                            if dx * dx + dy * dy <= ow * ow:
-                                draw.text((lx + dx, y_cursor + dy), line, font=font,
-                                          fill=(*outline_rgb, outline_alpha))
-
-            if layer.shadow:
-                draw.text((lx + 2, y_cursor + 2), line, font=font,
-                          fill=(*shadow_rgb, shadow_alpha))
-
-            draw.text((lx, y_cursor), line, font=font, fill=(*text_rgb, effective_alpha))
-            y_cursor += lh
-
-        if kf.rotation != 0:
-            overlay = overlay.rotate(-kf.rotation, center=(cx, cy),
-                                     resample=Image.Resampling.BICUBIC, expand=False)
-
-        return Image.alpha_composite(frame, overlay)
+        return render_text_pil(frame, layer, frame_idx, self.total_frames)
 
     def _get_pil_font(self, layer, size):
-        family = layer.font_family.lower().replace(' ', '')
-        candidates = []
-        if layer.bold and layer.italic:
-            candidates += [f"{family}bi.ttf", f"{family}z.ttf"]
-        if layer.bold:
-            candidates += [f"{family}bd.ttf", f"{family}b.ttf"]
-        if layer.italic:
-            candidates.append(f"{family}i.ttf")
-        candidates.append(f"{family}.ttf")
-        candidates += ["impact.ttf", "arialbd.ttf", "arial.ttf"]
-        for name in candidates:
-            try:
-                return ImageFont.truetype(f"C:/Windows/Fonts/{name}", size)
-            except Exception:
-                continue
-        return ImageFont.load_default()
+        return get_pil_font(layer, size)
 
 
 # ============================================================================

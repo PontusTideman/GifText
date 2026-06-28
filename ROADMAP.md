@@ -89,13 +89,6 @@ else handles cleanly on desktop.
 
 ## Research-Driven Additions
 
-- [ ] P0 - Move load, tracking, and export into cancellable worker threads
-  Why: Large GIF decode/render/OpenCV work currently runs on the GUI thread and can freeze the editor.
-  Evidence: `GifText.py:2200`, `GifText.py:2817`, `GifText.py:3090`; ScreenToGif background export model.
-  Touches: `GifText.py`, new worker module if the file is split, `test_giftext.py`
-  Acceptance: Loading, tracking, and export show progress, stay responsive, support cancel, and never call `QApplication.processEvents()` as the main responsiveness mechanism.
-  Complexity: L
-
 - [ ] P0 - Add structured diagnostics for load, project, recent-file, tracking, and export failures
   Why: Current failures are status-bar-only, and recent-file persistence can fail silently.
   Evidence: `GifText.py:2252`, `GifText.py:3058`, `GifText.py:3080`, `GifText.py:3138`.
