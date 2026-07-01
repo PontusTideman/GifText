@@ -380,6 +380,13 @@ class ExportWorker(CancelableWorker):
                 duration=self.frame_durations, loop=0, lossless=False, quality=85
             )
             return self.path
+        elif self.ext == '.apng':
+            frames = [f.convert("RGBA") for f in rendered]
+            frames[0].save(
+                self.path, save_all=True, append_images=frames[1:],
+                duration=self.frame_durations, loop=0
+            )
+            return self.path
         elif self.ext == '.png':
             base = os.path.splitext(self.path)[0]
             written = []

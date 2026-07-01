@@ -2058,13 +2058,15 @@ class GifTextApp(QMainWindow):
 
     def _resolve_export_target(self, path, selected_filter):
         ext = os.path.splitext(path)[1].lower()
-        if ext in {".gif", ".webp", ".png", ".mp4", ".webm"}:
+        if ext in {".gif", ".webp", ".png", ".apng", ".mp4", ".webm"}:
             return path, ext
 
         filt = selected_filter.lower()
-        if "webp" in filt:
+        if "apng" in filt:
+            ext = ".apng"
+        elif "webp" in filt:
             ext = ".webp"
-        elif "png" in filt:
+        elif "png sequence" in filt or ("png" in filt and "apng" not in filt):
             ext = ".png"
         elif "mp4" in filt:
             ext = ".mp4"
@@ -3399,7 +3401,7 @@ class GifTextApp(QMainWindow):
         video_filters = ";;MP4 Video (*.mp4);;WebM Video (*.webm)" if HAS_IMAGEIO else ""
         path, filt = QFileDialog.getSaveFileName(
             self, "Export", os.path.join(default_dir, default_name),
-            f"GIF (*.gif);;WebP (*.webp);;PNG Sequence (*.png){video_filters}"
+            f"GIF (*.gif);;WebP (*.webp);;APNG (*.apng);;PNG Sequence (*.png){video_filters}"
         )
         if not path:
             return
