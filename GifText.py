@@ -3228,7 +3228,103 @@ class GifTextApp(QMainWindow):
 #  Entry
 # ============================================================================
 
+def cli_render(project_path, output_path, output_format=None):
+    import argparse
+    project_path = os.path.abspath(project_path)
+    if not os.path.isfile(project_path):
+        print(f"Error: project file not found: {project_path}", file=sys.stderr)
+        return 1
+
+    with open(project_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    gif_path = payload.get("gif_path", "")
+    gif_relpath = payload.get("gif_relpath")
+    project_dir = os.path.dirname(project_path)
+    candidates = [gif_path]
+    if gif_relpath:
+        candidates.append(os.path.join(project_dir, gif_relpath))
+    source = None
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            source = candidate
+            break
+    if source is None:
+        print(f"Error: source GIF not found (tried {candidates})", file=sys.stderr)
+        return 1
+
+    with Image.open(source) as img:
+        pil_frames = []
+        durations = []
+        for i in range(img.n_frames):
+            img.seek(i)
+            pil_frames.append(img.convert("RGBA").copy())
+            durations.append(max(img.info.get("duration", 100), 20))
+    total_frames = len(pil_frames)
+
+    validate_project_payload(payload, total_frames=total_frames)
+    layers = [TextLayer.from_dict(d) for d in payload.get("layers", [])]
+
+    if not output_path:
+        output_path = os.path.splitext(project_path)[0] + "_rendered.gif"
+    ext = output_format or os.path.splitext(output_path)[1].lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+
+    rendered = []
+    for i, pil_frame in enumerate(pil_frames):
+        frame = pil_frame.copy()
+        for layer in layers:
+            if layer.is_visible_at(i, total_frames):
+                frame = render_text_pil(frame, layer, i, total_frames)
+        rendered.append(frame)
+        print(f"Rendered frame {i + 1}/{total_frames}", end="\r")
+    print()
+
+    if ext == ".webp":
+        rendered[0].save(output_path, save_all=True, append_images=rendered[1:],
+                         duration=durations, loop=0, lossless=False, quality=85)
+    elif ext == ".png":
+        base = os.path.splitext(output_path)[0]
+        for i, frame in enumerate(rendered):
+            frame.save(f"{base}_{i:04d}.png")
+    elif ext in (".mp4", ".webm") and HAS_IMAGEIO:
+        import av
+        avg_dur = sum(durations) / max(1, len(durations))
+        fps = max(1, round(1000.0 / max(1, avg_dur)))
+        codec = "libvpx" if ext == ".webm" else "mpeg4"
+        container = av.open(output_path, mode="w")
+        stream = container.add_stream(codec, rate=fps)
+        stream.width = rendered[0].width
+        stream.height = rendered[0].height
+        stream.pix_fmt = "yuv420p"
+        for frame in rendered:
+            rgb = np.asarray(frame.convert("RGB"))
+            vf = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+            for pkt in stream.encode(vf):
+                container.mux(pkt)
+        for pkt in stream.encode():
+            container.mux(pkt)
+        container.close()
+    else:
+        frames = [f.convert("RGB") for f in rendered]
+        frames[0].save(output_path, save_all=True, append_images=frames[1:],
+                       duration=durations, loop=0, optimize=False)
+
+    print(f"Exported: {output_path}")
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--render":
+        import argparse
+        parser = argparse.ArgumentParser(prog="GifText", description="Headless project render")
+        parser.add_argument("--render", required=True, metavar="PROJECT", help=".giftext project file")
+        parser.add_argument("--output", "-o", default="", help="Output path (default: <project>_rendered.gif)")
+        parser.add_argument("--format", "-f", default=None, help="Output format: gif, webp, png, mp4, webm")
+        args = parser.parse_args()
+        sys.exit(cli_render(args.render, args.output, args.format))
+
     app = QApplication(sys.argv)
     branding_icon = QIcon(str(_branding_icon_path()))
     app.setWindowIcon(branding_icon)

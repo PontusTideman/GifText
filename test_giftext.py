@@ -25,6 +25,7 @@ from GifText import (
     build_project_payload,
     build_effect_keyframes,
     build_path_keyframes,
+    cli_render,
     get_pil_font,
     get_video_metadata,
     render_text_pil,
@@ -676,6 +677,37 @@ class DiagnosticsBundleTests(unittest.TestCase):
     def test_bundle_handles_missing_log_dir(self):
         bundle = build_diagnostics_bundle("1.5.0", log_dir="/nonexistent/path")
         self.assertIn("does not exist", bundle)
+
+
+class CLIRenderTests(unittest.TestCase):
+    def test_cli_render_produces_gif_from_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gif_path = os.path.join(tmp, "source.gif")
+            frames = [
+                Image.new("RGBA", (32, 24), (255, 0, 0, 255)),
+                Image.new("RGBA", (32, 24), (0, 255, 0, 255)),
+            ]
+            frames[0].save(gif_path, save_all=True, append_images=frames[1:],
+                           duration=[50, 50], loop=0)
+            layer = TextLayer("Hello")
+            layer.frame_out = 1
+            payload = build_project_payload(gif_path, [layer])
+            project_path = os.path.join(tmp, "test.giftext")
+            import json
+            with open(project_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+
+            output_path = os.path.join(tmp, "output.gif")
+            result = cli_render(project_path, output_path)
+
+            self.assertEqual(result, 0)
+            self.assertTrue(os.path.exists(output_path))
+            with Image.open(output_path) as out:
+                self.assertEqual(out.n_frames, 2)
+
+    def test_cli_render_returns_error_for_missing_project(self):
+        result = cli_render("/nonexistent/project.giftext", "output.gif")
+        self.assertEqual(result, 1)
 
 
 class VideoImportTests(unittest.TestCase):

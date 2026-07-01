@@ -120,6 +120,19 @@ Outputs: `dist/GifText.exe` and `dist/GifText.exe.sha256`.
 
 Failures are shown in the status bar, written to the right-side Diagnostics panel, and appended to timestamped logs under `%USERPROFILE%\.giftext\logs\`. Use the **Export Diagnostics Bundle** button to save a text file with app version, dependency versions, OS details, project state, and recent log entries for bug reports. Project files are validated before loading so invalid `.giftext` files do not replace the current document.
 
+## Command-Line Rendering
+
+Render a `.giftext` project file without opening the GUI:
+
+```bash
+python GifText.py --render project.giftext -o output.gif
+python GifText.py --render project.giftext -o video.mp4 -f mp4
+```
+
+Options:
+- `--output` / `-o` — output file path (default: `<project>_rendered.gif`)
+- `--format` / `-f` — output format: gif, webp, png, mp4, webm
+
 ## License
 
 MIT
