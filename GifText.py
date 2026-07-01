@@ -543,7 +543,7 @@ class GifCanvas(QWidget):
             p.drawText(
                 QRectF(inner.left(), inner.top() + inner.height() * 0.18, inner.width(), 34),
                 Qt.AlignmentFlag.AlignHCenter,
-                "Load an animated GIF"
+                "Load a GIF or video"
             )
 
             p.setPen(QColor("#a0acbc"))
