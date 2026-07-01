@@ -91,7 +91,7 @@ All interactive controls expose accessible names and descriptions for screen rea
 - Python / PyQt6 for the GUI
 - Pillow for GIF I/O and export rendering
 - OpenCV and NumPy for forward motion tracking
-- Single-file app with dependencies listed in `requirements.txt`
+- Modular architecture: models, animation, rendering, project I/O, diagnostics, workers, and UI
 
 ## Build Windows EXE
 
