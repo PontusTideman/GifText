@@ -21,6 +21,7 @@ from GifText import (
     VIDEO_EXTENSIONS,
     apply_easing_curve,
     apply_staggered_text,
+    build_diagnostics_bundle,
     build_project_payload,
     build_effect_keyframes,
     build_path_keyframes,
@@ -599,6 +600,29 @@ class WorkerTests(unittest.TestCase):
 
         self.assertIsNotNone(font)
         self.assertIsNotNone(rendered.getbbox())
+
+
+class DiagnosticsBundleTests(unittest.TestCase):
+    def test_bundle_includes_version_and_environment(self):
+        bundle = build_diagnostics_bundle("1.5.0", gif_path="test.gif", total_frames=10, layer_count=2)
+        self.assertIn("GifText v1.5.0", bundle)
+        self.assertIn("Python:", bundle)
+        self.assertIn("PyQt6:", bundle)
+        self.assertIn("Pillow:", bundle)
+        self.assertIn("test.gif", bundle)
+        self.assertIn("Frames: 10", bundle)
+        self.assertIn("Layers: 2", bundle)
+
+    def test_bundle_includes_recent_log_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = DiagnosticsRecorder(tmp)
+            recorder.record("error", "Export", "write denied")
+            bundle = build_diagnostics_bundle("1.5.0", log_dir=tmp)
+            self.assertIn("write denied", bundle)
+
+    def test_bundle_handles_missing_log_dir(self):
+        bundle = build_diagnostics_bundle("1.5.0", log_dir="/nonexistent/path")
+        self.assertIn("does not exist", bundle)
 
 
 class VideoImportTests(unittest.TestCase):

@@ -281,6 +281,56 @@ class DiagnosticsRecorder:
         return line
 
 
+def build_diagnostics_bundle(version, gif_path="", total_frames=0, layer_count=0,
+                              log_dir=None, max_log_lines=50):
+    import platform
+    lines = [f"GifText v{version}", ""]
+    lines.append("--- Environment ---")
+    lines.append(f"OS: {platform.system()} {platform.release()} ({platform.version()})")
+    lines.append(f"Python: {platform.python_version()}")
+    lines.append(f"Architecture: {platform.machine()}")
+    deps = {
+        "PyQt6": "PyQt6.QtCore",
+        "Pillow": "PIL",
+        "OpenCV": "cv2",
+        "NumPy": "numpy",
+        "imageio": "imageio",
+        "imageio-ffmpeg": "imageio_ffmpeg",
+    }
+    lines.append("")
+    lines.append("--- Dependencies ---")
+    for label, mod_name in deps.items():
+        try:
+            mod = __import__(mod_name)
+            ver = getattr(mod, "__version__", getattr(mod, "PYQT_VERSION_STR", "?"))
+            lines.append(f"{label}: {ver}")
+        except ImportError:
+            lines.append(f"{label}: not installed")
+    lines.append("")
+    lines.append("--- Project State ---")
+    lines.append(f"Source: {gif_path or '(none)'}")
+    lines.append(f"Frames: {total_frames}")
+    lines.append(f"Layers: {layer_count}")
+    if log_dir:
+        log_path = Path(log_dir)
+        if log_path.exists():
+            log_files = sorted(log_path.glob("errors-*.log"), reverse=True)
+            if log_files:
+                lines.append("")
+                lines.append(f"--- Recent Log ({log_files[0].name}) ---")
+                try:
+                    recent = log_files[0].read_text(encoding="utf-8").splitlines()
+                    for entry in recent[-max_log_lines:]:
+                        lines.append(entry)
+                except Exception:
+                    lines.append("(could not read log file)")
+            else:
+                lines.append("\n--- Logs ---\nNo error logs found.")
+        else:
+            lines.append("\n--- Logs ---\nLog directory does not exist.")
+    return "\n".join(lines)
+
+
 DARK_STYLE = """
 QMainWindow, QWidget {
     background-color: #0d1117;
@@ -2995,6 +3045,11 @@ class GifTextApp(QMainWindow):
         self.diagnostics_view.setMaximumHeight(118)
         self.diagnostics_view.setPlaceholderText("No diagnostics yet")
         diag_layout.addWidget(self.diagnostics_view)
+        self.btn_export_bundle = QPushButton("Export Diagnostics Bundle")
+        self.btn_export_bundle.setObjectName("ghost")
+        self.btn_export_bundle.setFixedHeight(28)
+        self.btn_export_bundle.clicked.connect(self._export_diagnostics_bundle)
+        diag_layout.addWidget(self.btn_export_bundle)
         rl.addWidget(diag_group)
 
         rl.addStretch()
@@ -3037,6 +3092,25 @@ class GifTextApp(QMainWindow):
         self.statusBar().showMessage(recovery)
         if dialog and self.isVisible():
             QMessageBox.warning(self, f"{action} failed", recovery)
+
+    def _export_diagnostics_bundle(self):
+        bundle = build_diagnostics_bundle(
+            version=VERSION,
+            gif_path=self.gif_path,
+            total_frames=self.total_frames,
+            layer_count=len(self.layers),
+            log_dir=str(self.diagnostics.log_dir),
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Diagnostics Bundle", "giftext-diagnostics.txt",
+            "Text Files (*.txt);;All Files (*)",
+        )
+        if path:
+            try:
+                Path(path).write_text(bundle, encoding="utf-8")
+                self.statusBar().showMessage(f"Diagnostics bundle saved to {os.path.basename(path)}")
+            except Exception as exc:
+                self._show_error("Save Bundle", str(exc), path=path, exc=exc)
 
     def _active_worker_path(self):
         worker = self.active_worker

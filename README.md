@@ -114,7 +114,7 @@ Outputs: `dist/GifText.exe` and `dist/GifText.exe.sha256`.
 
 ## Troubleshooting
 
-Failures are shown in the status bar, written to the right-side Diagnostics panel, and appended to timestamped logs under `%USERPROFILE%\.giftext\logs\`. Project files are validated before loading so invalid `.giftext` files do not replace the current document.
+Failures are shown in the status bar, written to the right-side Diagnostics panel, and appended to timestamped logs under `%USERPROFILE%\.giftext\logs\`. Use the **Export Diagnostics Bundle** button to save a text file with app version, dependency versions, OS details, project state, and recent log entries for bug reports. Project files are validated before loading so invalid `.giftext` files do not replace the current document.
 
 ## License
 
