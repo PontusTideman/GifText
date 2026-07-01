@@ -10,7 +10,6 @@ multiprocessing.freeze_support()
 
 import sys
 import os
-import math
 import json
 from datetime import datetime
 from pathlib import Path
@@ -44,8 +43,6 @@ from PyQt6.QtGui import (
     QFontMetrics, QPainterPath, QCursor, QWheelEvent, QAction, QLinearGradient
 )
 from PIL import Image
-import cv2
-import numpy as np
 
 from animation import (
     EASING_CURVES,
@@ -2476,12 +2473,14 @@ class GifTextApp(QMainWindow):
         self._update_all()
 
     def _delete_layer(self, layer_id):
+        name = next((l.text.split('\n')[0][:20] for l in self.layers if l.id == layer_id), "layer")
         self.layers = [l for l in self.layers if l.id != layer_id]
         if self.selected_layer and self.selected_layer.id == layer_id:
             self.selected_layer = self.layers[-1] if self.layers else None
         self._snapshot()
         self._rebuild_layer_list()
         self._update_all()
+        self.statusBar().showMessage(f"Deleted \"{name}\" (Ctrl+Z to undo)")
 
     # ================================================================
     #  Canvas Interaction
@@ -3056,109 +3055,6 @@ class GifTextApp(QMainWindow):
             f"Tracked {len(positions) - 1} frames and generated keyframes through frame {positions[-1][0] + 1}"
         )
 
-    def _track_positions_from_point(self, start_frame, rx, ry):
-        positions = self._track_positions_with_object_tracker(start_frame, rx, ry)
-        if len(positions) >= 2:
-            return positions
-        return self._track_positions_with_optical_flow(start_frame, rx, ry)
-
-    def _cv_bgr_frame(self, frame_idx):
-        rgb = np.asarray(self.gif_pil_frames[frame_idx].convert("RGB"))
-        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-    def _cv_gray_frame(self, frame_idx):
-        rgb = np.asarray(self.gif_pil_frames[frame_idx].convert("RGB"))
-        return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-
-    def _create_cv_tracker(self):
-        sources = [cv2]
-        legacy = getattr(cv2, "legacy", None)
-        if legacy is not None:
-            sources.append(legacy)
-        for source in sources:
-            for name in ("TrackerCSRT_create", "TrackerKCF_create"):
-                factory = getattr(source, name, None)
-                if factory is None:
-                    continue
-                try:
-                    return factory()
-                except Exception:
-                    continue
-        return None
-
-    def _track_positions_with_object_tracker(self, start_frame, rx, ry):
-        tracker = self._create_cv_tracker()
-        if tracker is None:
-            return []
-
-        first = self._cv_bgr_frame(start_frame)
-        h, w = first.shape[:2]
-        cx, cy = rx * w, ry * h
-        radius = max(8, min(36, int(min(w, h) * 0.08)))
-        x0 = max(0, min(w - 2, int(cx - radius)))
-        y0 = max(0, min(h - 2, int(cy - radius)))
-        x1 = max(x0 + 2, min(w, int(cx + radius)))
-        y1 = max(y0 + 2, min(h, int(cy + radius)))
-        bbox = (x0, y0, x1 - x0, y1 - y0)
-
-        try:
-            initialized = tracker.init(first, bbox)
-        except Exception:
-            return []
-        if initialized is False:
-            return []
-
-        positions = [(start_frame, rx, ry)]
-        for frame_idx in range(start_frame + 1, self.total_frames):
-            try:
-                ok, tracked_box = tracker.update(self._cv_bgr_frame(frame_idx))
-            except Exception:
-                break
-            if not ok:
-                break
-            x, y, bw, bh = tracked_box
-            tx = (x + bw / 2) / max(1, w)
-            ty = (y + bh / 2) / max(1, h)
-            if not (math.isfinite(tx) and math.isfinite(ty)):
-                break
-            positions.append((frame_idx, max(0.0, min(1.0, tx)), max(0.0, min(1.0, ty))))
-        return positions
-
-    def _track_positions_with_optical_flow(self, start_frame, rx, ry):
-        first = self._cv_gray_frame(start_frame)
-        h, w = first.shape[:2]
-        point = np.array([[[rx * w, ry * h]]], dtype=np.float32)
-        positions = [(start_frame, rx, ry)]
-        prev = first
-
-        criteria = (
-            cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
-            24,
-            0.01,
-        )
-        for frame_idx in range(start_frame + 1, self.total_frames):
-            nxt = self._cv_gray_frame(frame_idx)
-            next_point, status, _err = cv2.calcOpticalFlowPyrLK(
-                prev,
-                nxt,
-                point,
-                None,
-                winSize=(31, 31),
-                maxLevel=3,
-                criteria=criteria,
-            )
-            if next_point is None or status is None or status[0][0] != 1:
-                break
-            x, y = next_point[0][0]
-            if not (math.isfinite(float(x)) and math.isfinite(float(y))):
-                break
-            if x < 0 or y < 0 or x >= w or y >= h:
-                break
-            positions.append((frame_idx, float(x) / max(1, w), float(y) / max(1, h)))
-            prev = nxt
-            point = next_point.reshape(1, 1, 2)
-        return positions
-
     # ================================================================
     #  Undo / Redo
     # ================================================================
@@ -3169,27 +3065,29 @@ class GifTextApp(QMainWindow):
         self.undo_mgr.snapshot(self.layers)
         self._update_undo_btns()
 
+    def _restore_layers(self, result, label):
+        prev_id = self.selected_layer.id if self.selected_layer else -1
+        self.layers = result
+        self.selected_layer = next((l for l in self.layers if l.id == prev_id), None)
+        if self.selected_layer is None and self.layers:
+            self.selected_layer = self.layers[-1]
+        self._rebuild_layer_list()
+        self._update_all()
+        self.statusBar().showMessage(label)
+
     def _undo(self):
         if self.snapshot_timer.isActive():
             self._snapshot()
         result = self.undo_mgr.undo()
         if result is not None:
-            self.layers = result
-            self.selected_layer = self.layers[-1] if self.layers else None
-            self._rebuild_layer_list()
-            self._update_all()
-            self.statusBar().showMessage("Undo")
+            self._restore_layers(result, "Undo")
 
     def _redo(self):
         if self.snapshot_timer.isActive():
             self._snapshot()
         result = self.undo_mgr.redo()
         if result is not None:
-            self.layers = result
-            self.selected_layer = self.layers[-1] if self.layers else None
-            self._rebuild_layer_list()
-            self._update_all()
-            self.statusBar().showMessage("Redo")
+            self._restore_layers(result, "Redo")
 
     def _update_undo_btns(self):
         self.btn_undo.setEnabled(self.undo_mgr.can_undo)
@@ -3673,6 +3571,7 @@ def cli_render(project_path, output_path, output_format=None):
             frame.save(f"{base}_{i:04d}.png")
     elif ext in (".mp4", ".webm") and HAS_IMAGEIO:
         import av
+        import numpy as _np
         avg_dur = sum(durations) / max(1, len(durations))
         fps = max(1, round(1000.0 / max(1, avg_dur)))
         codec = "libvpx" if ext == ".webm" else "mpeg4"
@@ -3682,7 +3581,7 @@ def cli_render(project_path, output_path, output_format=None):
         stream.height = rendered[0].height
         stream.pix_fmt = "yuv420p"
         for frame in rendered:
-            rgb = np.asarray(frame.convert("RGB"))
+            rgb = _np.asarray(frame.convert("RGB"))
             vf = av.VideoFrame.from_ndarray(rgb, format="rgb24")
             for pkt in stream.encode(vf):
                 container.mux(pkt)
