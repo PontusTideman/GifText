@@ -1366,6 +1366,20 @@ class GifTextApp(QMainWindow):
         self.speed_combo.setFixedWidth(70)
         opts.addWidget(self.speed_combo)
 
+        self.btn_trim = QPushButton("Trim Frames")
+        self.btn_trim.setObjectName("ghost")
+        self.btn_trim.setMinimumHeight(30)
+        self.btn_trim.clicked.connect(self._trim_frames)
+        self.btn_trim.setEnabled(False)
+        opts.addWidget(self.btn_trim)
+
+        self.btn_resize = QPushButton("Resize")
+        self.btn_resize.setObjectName("ghost")
+        self.btn_resize.setMinimumHeight(30)
+        self.btn_resize.clicked.connect(self._resize_source)
+        self.btn_resize.setEnabled(False)
+        opts.addWidget(self.btn_resize)
+
         opts.addStretch()
         hl.addWidget(opts_wrap)
         ll.addWidget(header)
@@ -1923,6 +1937,8 @@ class GifTextApp(QMainWindow):
         self.spin_frame_out.setAccessibleName("Layer end frame")
         self.spin_fade_in.setAccessibleName("Fade in frames")
         self.spin_fade_out.setAccessibleName("Fade out frames")
+        self.btn_trim.setAccessibleName("Trim frame range")
+        self.btn_resize.setAccessibleName("Resize source frames")
         self.diagnostics_view.setAccessibleName("Diagnostics log")
         self.btn_export_bundle.setAccessibleName("Export diagnostics bundle")
         self.canvas.setAccessibleName("Animation canvas")
@@ -2018,7 +2034,7 @@ class GifTextApp(QMainWindow):
 
     def _resolve_export_target(self, path, selected_filter):
         ext = os.path.splitext(path)[1].lower()
-        if ext in {".gif", ".webp", ".png"}:
+        if ext in {".gif", ".webp", ".png", ".mp4", ".webm"}:
             return path, ext
 
         filt = selected_filter.lower()
@@ -2026,6 +2042,10 @@ class GifTextApp(QMainWindow):
             ext = ".webp"
         elif "png" in filt:
             ext = ".png"
+        elif "mp4" in filt:
+            ext = ".mp4"
+        elif "webm" in filt:
+            ext = ".webm"
         else:
             ext = ".gif"
         return path + ext, ext
@@ -2210,6 +2230,8 @@ class GifTextApp(QMainWindow):
             self.btn_export.setEnabled(True)
             self.btn_save_proj.setEnabled(True)
             self.btn_import_subs.setEnabled(True)
+            self.btn_trim.setEnabled(True)
+            self.btn_resize.setEnabled(True)
             self.layer_timeline.total_frames = self.total_frames
             self._rebuild_layer_list()
             self.info_label.setText(f"{self.gif_width}x{self.gif_height} | {self.total_frames}f | {os.path.basename(self.gif_path)}")
@@ -3187,6 +3209,95 @@ class GifTextApp(QMainWindow):
     # ================================================================
     #  Export
     # ================================================================
+
+    def _trim_frames(self):
+        if self.total_frames < 3:
+            self.statusBar().showMessage("Need at least 3 frames to trim")
+            return
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Trim Frames")
+        layout = QGridLayout(dlg)
+        layout.addWidget(QLabel("Start frame:"), 0, 0)
+        spin_start = QSpinBox()
+        spin_start.setRange(0, self.total_frames - 2)
+        spin_start.setValue(0)
+        layout.addWidget(spin_start, 0, 1)
+        layout.addWidget(QLabel("End frame:"), 1, 0)
+        spin_end = QSpinBox()
+        spin_end.setRange(1, self.total_frames - 1)
+        spin_end.setValue(self.total_frames - 1)
+        layout.addWidget(spin_end, 1, 1)
+        layout.addWidget(QLabel(f"Total: {self.total_frames} frames"), 2, 0, 1, 2)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons, 3, 0, 1, 2)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        start = spin_start.value()
+        end = spin_end.value()
+        if start >= end or (start == 0 and end == self.total_frames - 1):
+            return
+        self.gif_frames = self.gif_frames[start:end + 1]
+        self.gif_pil_frames = self.gif_pil_frames[start:end + 1]
+        self.frame_durations = self.frame_durations[start:end + 1]
+        self.total_frames = len(self.gif_frames)
+        self.current_frame = 0
+        self.frame_slider.blockSignals(True)
+        self.frame_slider.setRange(0, self.total_frames - 1)
+        self.frame_slider.setValue(0)
+        self.frame_slider.blockSignals(False)
+        self.layer_timeline.total_frames = self.total_frames
+        self.info_label.setText(f"{self.gif_width}x{self.gif_height} | {self.total_frames}f | {os.path.basename(self.gif_path)}")
+        self._snapshot()
+        self._update_all()
+        self.statusBar().showMessage(f"Trimmed to {self.total_frames} frames")
+
+    def _resize_source(self):
+        if not self.gif_pil_frames:
+            return
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Resize Source")
+        layout = QGridLayout(dlg)
+        layout.addWidget(QLabel(f"Current: {self.gif_width}x{self.gif_height}"), 0, 0, 1, 2)
+        layout.addWidget(QLabel("Max dimension:"), 1, 0)
+        spin_max = QSpinBox()
+        spin_max.setRange(16, max(self.gif_width, self.gif_height))
+        spin_max.setValue(max(self.gif_width, self.gif_height))
+        spin_max.setSingleStep(32)
+        layout.addWidget(spin_max, 1, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons, 2, 0, 1, 2)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        max_dim = spin_max.value()
+        if max_dim >= max(self.gif_width, self.gif_height):
+            return
+        ratio = max_dim / max(self.gif_width, self.gif_height)
+        new_w = max(1, int(self.gif_width * ratio))
+        new_h = max(1, int(self.gif_height * ratio))
+        new_pil = []
+        new_qpx = []
+        for pil_frame in self.gif_pil_frames:
+            resized = pil_frame.resize((new_w, new_h), Image.LANCZOS)
+            new_pil.append(resized)
+            fb = resized.tobytes("raw", "RGBA")
+            from PyQt6.QtGui import QImage
+            qimg = QImage(fb, new_w, new_h, QImage.Format.Format_RGBA8888)
+            new_qpx.append(QPixmap.fromImage(qimg.copy()))
+        self.gif_pil_frames = new_pil
+        self.gif_frames = new_qpx
+        self.gif_width = new_w
+        self.gif_height = new_h
+        self.canvas.setMinimumSize(QSize(new_w, new_h))
+        self.info_label.setText(f"{new_w}x{new_h} | {self.total_frames}f | {os.path.basename(self.gif_path)}")
+        self._snapshot()
+        self._update_all()
+        self.statusBar().showMessage(f"Resized to {new_w}x{new_h}")
 
     def _export_gif(self):
         if not self.gif_pil_frames:
