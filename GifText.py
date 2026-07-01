@@ -2269,7 +2269,11 @@ class GifTextApp(QMainWindow):
             new_frames: list[QPixmap] = []
             new_width = data["width"]
             new_height = data["height"]
+            expected_size = new_width * new_height * 4
             for frame_bytes in data["frame_bytes"]:
+                if len(frame_bytes) != expected_size:
+                    self.statusBar().showMessage("Frame data size mismatch — skipped corrupt frame")
+                    continue
                 qimg = QImage(frame_bytes, new_width, new_height, QImage.Format.Format_RGBA8888)
                 new_frames.append(QPixmap.fromImage(qimg.copy()))
 
@@ -2340,9 +2344,9 @@ class GifTextApp(QMainWindow):
     def _advance_frame(self):
         if not self.playing or not self.gif_frames:
             return
+        delay = int(self.frame_durations[self.current_frame] / self.play_speed)
         nxt = (self.current_frame + 1) % self.total_frames
         self.frame_slider.setValue(nxt)
-        delay = int(self.frame_durations[self.current_frame] / self.play_speed)
         self.play_timer.start(max(10, delay))
 
     def _step_frame(self, delta):
@@ -3338,7 +3342,6 @@ class GifTextApp(QMainWindow):
             if not isinstance(layers_data, list) or not layers_data:
                 self._show_error("Load template", "Template contains no layers", path=path)
                 return
-            TextLayer._counter = 0
             new_layers = [TextLayer.from_dict(d) for d in layers_data]
             self.layers = new_layers
             self.selected_layer = self.layers[0] if self.layers else None
@@ -3446,6 +3449,17 @@ class GifTextApp(QMainWindow):
         self.frame_durations = self.frame_durations[start:end + 1]
         self.total_frames = len(self.gif_frames)
         self.current_frame = 0
+        # Adjust layer keyframe indices and frame-range properties by the trim offset
+        new_max = self.total_frames - 1
+        for layer in self.layers:
+            for kf in layer.keyframes:
+                kf.frame = max(0, min(kf.frame - start, new_max))
+            layer.frame_in = max(0, min(layer.frame_in - start, new_max))
+            if layer.frame_out >= 0:
+                layer.frame_out = max(0, min(layer.frame_out - start, new_max))
+            layer.path_start_frame = max(0, min(layer.path_start_frame - start, new_max))
+            if layer.path_end_frame >= 0:
+                layer.path_end_frame = max(0, min(layer.path_end_frame - start, new_max))
         self.frame_slider.blockSignals(True)
         self.frame_slider.setRange(0, self.total_frames - 1)
         self.frame_slider.setValue(0)
@@ -3495,7 +3509,6 @@ class GifTextApp(QMainWindow):
         self.gif_frames = new_qpx
         self.gif_width = new_w
         self.gif_height = new_h
-        self.canvas.setMinimumSize(QSize(new_w, new_h))
         self.info_label.setText(f"{new_w}x{new_h} | {self.total_frames}f | {os.path.basename(self.gif_path)}")
         self._snapshot()
         self._update_all()
@@ -3570,8 +3583,11 @@ class GifTextApp(QMainWindow):
         self._start_worker("Size-target export", worker, self._on_export_finished)
 
     def _on_export_finished(self, output_path):
-        size_mb = os.path.getsize(output_path) / (1024 * 1024)
-        self.statusBar().showMessage(f"Exported: {os.path.basename(output_path)} ({size_mb:.1f} MB)")
+        try:
+            size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            self.statusBar().showMessage(f"Exported: {os.path.basename(output_path)} ({size_mb:.1f} MB)")
+        except OSError:
+            self.statusBar().showMessage(f"Exported: {os.path.basename(output_path)}")
 
     def _render_text_pil(self, frame, layer, frame_idx):
         return render_text_pil(frame, layer, frame_idx, self.total_frames)
@@ -3585,7 +3601,6 @@ class GifTextApp(QMainWindow):
 # ============================================================================
 
 def cli_render(project_path, output_path, output_format=None):
-    import argparse
     project_path = os.path.abspath(project_path)
     if not os.path.isfile(project_path):
         print(f"Error: project file not found: {project_path}", file=sys.stderr)
@@ -3612,11 +3627,15 @@ def cli_render(project_path, output_path, output_format=None):
     with Image.open(source) as img:
         pil_frames = []
         durations = []
-        for i in range(img.n_frames):
+        n_frames = getattr(img, "n_frames", 1)
+        for i in range(n_frames):
             img.seek(i)
             pil_frames.append(img.convert("RGBA").copy())
             durations.append(max(img.info.get("duration", 100), 20))
     total_frames = len(pil_frames)
+    if total_frames < 1:
+        print("Error: source file has no frames", file=sys.stderr)
+        return 1
 
     validate_project_payload(payload, total_frames=total_frames)
     layers = [TextLayer.from_dict(d) for d in payload.get("layers", [])]

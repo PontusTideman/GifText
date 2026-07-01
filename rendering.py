@@ -81,9 +81,14 @@ def render_text_pil(frame, layer, frame_idx, total_frames):
     cy = kf.y * frame.height
     y_cursor = cy - total_h / 2
 
-    text_rgb = tuple(int(kf.color[i:i+2], 16) for i in (1, 3, 5))
-    outline_rgb = tuple(int(kf.outline_color[i:i+2], 16) for i in (1, 3, 5))
-    shadow_rgb = tuple(int(kf.shadow_color[i:i+2], 16) for i in (1, 3, 5))
+    def _parse_hex(color):
+        try:
+            return tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+        except (ValueError, IndexError):
+            return (255, 255, 255)
+    text_rgb = _parse_hex(kf.color)
+    outline_rgb = _parse_hex(kf.outline_color)
+    shadow_rgb = _parse_hex(kf.shadow_color)
     outline_alpha = int(effective_alpha * kf.outline_opacity)
     shadow_alpha = int(effective_alpha * kf.shadow_opacity)
 

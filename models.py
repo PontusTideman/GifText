@@ -176,8 +176,9 @@ class TextLayer:
 
     def hit_test(self, rx, ry, frame, scale_factor=1.0):
         kf = self.get_interpolated(frame)
-        char_w = (kf.font_size * 0.6 * max(len(l) for l in self.text.split('\n'))) * scale_factor
-        char_h = kf.font_size * 1.2 * len(self.text.split('\n')) * scale_factor
+        max_line_len = max((len(l) for l in self.text.split('\n')), default=1) or 1
+        char_w = (kf.font_size * 0.6 * max_line_len) * scale_factor
+        char_h = kf.font_size * 1.2 * max(len(self.text.split('\n')), 1) * scale_factor
         dx, dy = abs(rx - kf.x), abs(ry - kf.y)
         if dx < char_w / 2 + 0.03 and dy < char_h / 2 + 0.03:
             return math.sqrt(dx * dx + dy * dy)

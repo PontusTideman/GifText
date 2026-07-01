@@ -108,7 +108,6 @@ class LoadVideoWorker(CancelableWorker):
                 self.failed.emit("Trim range is empty")
                 return
 
-            clip_duration = actual_end - actual_start
             step = max(1, int(round(video_fps / self.target_fps)))
             frame_duration_ms = int(round(1000.0 / self.target_fps))
             start_frame_idx = int(actual_start * video_fps)

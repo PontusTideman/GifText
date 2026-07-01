@@ -158,6 +158,19 @@ class PathAnimationTests(unittest.TestCase):
         self.assertTrue(any((kf.x, kf.y) != (0.5, 0.5) for kf in shake[1:-1]))
 
 
+    def test_empty_text_hit_test_does_not_crash(self):
+        layer = TextLayer("")
+        result = layer.hit_test(0.5, 0.5, 0)
+        self.assertIsNotNone(result)
+
+    def test_malformed_color_renders_without_crash(self):
+        frame = Image.new("RGBA", (64, 48), (0, 0, 0, 0))
+        layer = TextLayer("Test")
+        layer.keyframes[0].color = "#fff"
+        rendered = render_text_pil(frame, layer, 0, 1)
+        self.assertIsNotNone(rendered)
+
+
 class DiagnosticsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
