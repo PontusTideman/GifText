@@ -313,7 +313,8 @@ class TrackingWorker(CancelableWorker):
 
 
 class ExportWorker(CancelableWorker):
-    def __init__(self, pil_frames, layers_payload, frame_durations, total_frames, path, ext):
+    def __init__(self, pil_frames, layers_payload, frame_durations, total_frames, path, ext,
+                 target_size_bytes=0):
         super().__init__()
         self.pil_frames = [frame.copy() for frame in pil_frames]
         self.layers_payload = layers_payload
@@ -321,96 +322,130 @@ class ExportWorker(CancelableWorker):
         self.total_frames = total_frames
         self.path = path
         self.ext = ext
+        self.target_size_bytes = target_size_bytes
+
+    def _render_frames(self, pil_frames):
+        old_counter = TextLayer._counter
+        try:
+            layers = [TextLayer.from_dict(d) for d in self.layers_payload]
+        finally:
+            TextLayer._counter = old_counter
+        rendered = []
+        total = len(pil_frames)
+        for i, pil_frame in enumerate(pil_frames):
+            if self._is_canceled():
+                return None
+            frame = pil_frame.copy()
+            for layer in layers:
+                if not layer.is_visible_at(i, self.total_frames):
+                    continue
+                frame = render_text_pil(frame, layer, i, self.total_frames)
+            rendered.append(frame)
+            self.progress.emit(int((i + 1) / total * 70), f"Rendering frame {i + 1} of {total}")
+        return rendered
+
+    def _write_output(self, rendered, total):
+        if self.ext in ('.mp4', '.webm') and HAS_IMAGEIO:
+            import av
+            avg_duration = sum(self.frame_durations) / max(1, len(self.frame_durations))
+            fps = max(1, round(1000.0 / max(1, avg_duration)))
+            codec = "libvpx" if self.ext == ".webm" else "mpeg4"
+            container = av.open(self.path, mode="w")
+            stream = container.add_stream(codec, rate=fps)
+            stream.width = rendered[0].width
+            stream.height = rendered[0].height
+            stream.pix_fmt = "yuv420p"
+            for i, frame in enumerate(rendered):
+                if self._is_canceled():
+                    container.close()
+                    try:
+                        os.remove(self.path)
+                    except OSError:
+                        pass
+                    return None
+                import numpy as _np
+                rgb = _np.asarray(frame.convert("RGB"))
+                video_frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+                for packet in stream.encode(video_frame):
+                    container.mux(packet)
+                self.progress.emit(70 + int((i + 1) / total * 30), f"Encoding frame {i + 1} of {total}")
+            for packet in stream.encode():
+                container.mux(packet)
+            container.close()
+            return self.path
+        elif self.ext == '.webp':
+            frames = [f.convert("RGBA") for f in rendered]
+            frames[0].save(
+                self.path, save_all=True, append_images=frames[1:],
+                duration=self.frame_durations, loop=0, lossless=False, quality=85
+            )
+            return self.path
+        elif self.ext == '.png':
+            base = os.path.splitext(self.path)[0]
+            written = []
+            for i, frame in enumerate(rendered):
+                if self._is_canceled():
+                    for filename in written:
+                        try:
+                            os.remove(filename)
+                        except OSError:
+                            pass
+                    return None
+                filename = f"{base}_{i:04d}.png"
+                frame.save(filename)
+                written.append(filename)
+                self.progress.emit(70 + int((i + 1) / total * 30), f"Saving PNG {i + 1} of {total}")
+            return f"{base}_0000.png"
+        else:
+            frames = [f.convert("RGB") for f in rendered]
+            frames[0].save(
+                self.path, save_all=True, append_images=frames[1:],
+                duration=self.frame_durations, loop=0, optimize=False
+            )
+            return self.path
 
     @pyqtSlot()
     def run(self):
         try:
-            old_counter = TextLayer._counter
-            try:
-                layers = [TextLayer.from_dict(d) for d in self.layers_payload]
-            finally:
-                TextLayer._counter = old_counter
-            rendered = []
-            total = len(self.pil_frames)
-            for i, pil_frame in enumerate(self.pil_frames):
+            source_frames = self.pil_frames
+            total = len(source_frames)
+            scale = 1.0
+            for attempt in range(6):
+                if scale < 1.0:
+                    w = max(1, int(self.pil_frames[0].width * scale))
+                    h = max(1, int(self.pil_frames[0].height * scale))
+                    source_frames = [f.resize((w, h), Image.LANCZOS) for f in self.pil_frames]
+                    self.progress.emit(5, f"Size target: attempt {attempt + 1} at {int(scale * 100)}% scale")
+
+                rendered = self._render_frames(source_frames)
+                if rendered is None:
+                    self.canceled.emit()
+                    return
                 if self._is_canceled():
                     self.canceled.emit()
                     return
-                frame = pil_frame.copy()
-                for layer in layers:
-                    if not layer.is_visible_at(i, self.total_frames):
-                        continue
-                    frame = render_text_pil(frame, layer, i, self.total_frames)
-                rendered.append(frame)
-                self.progress.emit(int((i + 1) / total * 70), f"Rendering frame {i + 1} of {total}")
 
-            if self._is_canceled():
-                self.canceled.emit()
+                output = self._write_output(rendered, total)
+                if output is None:
+                    self.canceled.emit()
+                    return
+
+                self.progress.emit(100, "Export complete")
+
+                if self.target_size_bytes > 0 and self.ext in ('.gif', '.webp') and os.path.isfile(output):
+                    actual = os.path.getsize(output)
+                    if actual <= self.target_size_bytes:
+                        self.finished.emit(output)
+                        return
+                    scale *= 0.8
+                    if scale < 0.15:
+                        self.finished.emit(output)
+                        return
+                    continue
+
+                self.finished.emit(output)
                 return
 
-            if self.ext in ('.mp4', '.webm') and HAS_IMAGEIO:
-                import av
-                avg_duration = sum(self.frame_durations) / max(1, len(self.frame_durations))
-                fps = max(1, round(1000.0 / max(1, avg_duration)))
-                codec = "libvpx" if self.ext == ".webm" else "mpeg4"
-                pix_fmt = "yuv420p"
-                container = av.open(self.path, mode="w")
-                stream = container.add_stream(codec, rate=fps)
-                stream.width = rendered[0].width
-                stream.height = rendered[0].height
-                stream.pix_fmt = pix_fmt
-                for i, frame in enumerate(rendered):
-                    if self._is_canceled():
-                        container.close()
-                        try:
-                            os.remove(self.path)
-                        except OSError:
-                            pass
-                        self.canceled.emit()
-                        return
-                    import numpy as _np
-                    rgb = _np.asarray(frame.convert("RGB"))
-                    video_frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
-                    for packet in stream.encode(video_frame):
-                        container.mux(packet)
-                    self.progress.emit(70 + int((i + 1) / total * 30), f"Encoding frame {i + 1} of {total}")
-                for packet in stream.encode():
-                    container.mux(packet)
-                container.close()
-                output = self.path
-            elif self.ext == '.webp':
-                frames = [f.convert("RGBA") for f in rendered]
-                frames[0].save(
-                    self.path, save_all=True, append_images=frames[1:],
-                    duration=self.frame_durations, loop=0, lossless=False, quality=85
-                )
-                output = self.path
-            elif self.ext == '.png':
-                base = os.path.splitext(self.path)[0]
-                written = []
-                for i, frame in enumerate(rendered):
-                    if self._is_canceled():
-                        for filename in written:
-                            try:
-                                os.remove(filename)
-                            except OSError:
-                                pass
-                        self.canceled.emit()
-                        return
-                    filename = f"{base}_{i:04d}.png"
-                    frame.save(filename)
-                    written.append(filename)
-                    self.progress.emit(70 + int((i + 1) / total * 30), f"Saving PNG {i + 1} of {total}")
-                output = f"{base}_0000.png"
-            else:
-                frames = [f.convert("RGB") for f in rendered]
-                frames[0].save(
-                    self.path, save_all=True, append_images=frames[1:],
-                    duration=self.frame_durations, loop=0, optimize=False
-                )
-                output = self.path
-
-            self.progress.emit(100, "Export complete")
-            self.finished.emit(output)
+            self.finished.emit(self.path)
         except Exception as exc:
             self.failed.emit(str(exc))

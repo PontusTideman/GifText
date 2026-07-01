@@ -1277,6 +1277,13 @@ class GifTextApp(QMainWindow):
         self.btn_export.setEnabled(False)
         primary_row.addWidget(self.btn_export)
 
+        self.btn_export_fit = QPushButton("Export ≤ MB")
+        self.btn_export_fit.setObjectName("ghost")
+        self.btn_export_fit.setMinimumHeight(36)
+        self.btn_export_fit.clicked.connect(self._export_size_target)
+        self.btn_export_fit.setEnabled(False)
+        primary_row.addWidget(self.btn_export_fit)
+
         # Recent files dropdown
         self.btn_recent = QPushButton("Recent")
         self.btn_recent.setObjectName("ghost")
@@ -1895,6 +1902,7 @@ class GifTextApp(QMainWindow):
         self.btn_load.setAccessibleName("Load media file")
         self.btn_load.setAccessibleDescription("Open a GIF or video file for editing")
         self.btn_export.setAccessibleName("Export")
+        self.btn_export_fit.setAccessibleName("Export with size target")
         self.btn_export.setAccessibleDescription("Export the current project as GIF, WebP, or PNG sequence")
         self.btn_recent.setAccessibleName("Recent files")
         self.btn_save_proj.setAccessibleName("Save project")
@@ -2233,6 +2241,7 @@ class GifTextApp(QMainWindow):
             self.btn_next.setEnabled(True)
             self.btn_add.setEnabled(True)
             self.btn_export.setEnabled(True)
+            self.btn_export_fit.setEnabled(True)
             self.btn_save_proj.setEnabled(True)
             self.btn_import_subs.setEnabled(True)
             self.btn_trim.setEnabled(True)
@@ -3374,8 +3383,51 @@ class GifTextApp(QMainWindow):
         )
         self._start_worker("Export", worker, self._on_export_finished)
 
+    def _export_size_target(self):
+        if not self.gif_pil_frames:
+            return
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Size-Target Export")
+        layout = QGridLayout(dlg)
+        layout.addWidget(QLabel("Max file size (MB):"), 0, 0)
+        spin_mb = QDoubleSpinBox()
+        spin_mb.setRange(0.1, 500.0)
+        spin_mb.setValue(10.0)
+        spin_mb.setSingleStep(1.0)
+        spin_mb.setDecimals(1)
+        layout.addWidget(spin_mb, 0, 1)
+        layout.addWidget(QLabel("Format:"), 1, 0)
+        fmt_combo = QComboBox()
+        fmt_combo.addItems(["GIF", "WebP"])
+        layout.addWidget(fmt_combo, 1, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons, 2, 0, 1, 2)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        target_bytes = int(spin_mb.value() * 1024 * 1024)
+        ext = ".gif" if fmt_combo.currentText() == "GIF" else ".webp"
+        default_name = os.path.splitext(os.path.basename(self.gif_path))[0] + f"_fit{ext}"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export (Size Target)", os.path.join(os.path.dirname(self.gif_path), default_name),
+            f"{'GIF' if ext == '.gif' else 'WebP'} (*{ext})"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(ext):
+            path += ext
+        layers_payload = [l.to_dict() for l in self.layers]
+        worker = ExportWorker(
+            self.gif_pil_frames, layers_payload, self.frame_durations,
+            self.total_frames, path, ext, target_size_bytes=target_bytes,
+        )
+        self._start_worker("Size-target export", worker, self._on_export_finished)
+
     def _on_export_finished(self, output_path):
-        self.statusBar().showMessage(f"Exported: {os.path.basename(output_path)}")
+        size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        self.statusBar().showMessage(f"Exported: {os.path.basename(output_path)} ({size_mb:.1f} MB)")
 
     def _render_text_pil(self, frame, layer, frame_idx):
         return render_text_pil(frame, layer, frame_idx, self.total_frames)

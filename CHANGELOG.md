@@ -10,6 +10,7 @@ All notable changes to GifText will be documented in this file.
 - Added in-app diagnostics bundle export with version, dependency, OS, and log details.
 - Added MP4 and WebM video export via PyAV alongside existing GIF/WebP/PNG formats.
 - Added `--render` CLI mode for headless project rendering to GIF/WebP/PNG/MP4/WebM.
+- Added size-target export that iteratively downscales until the output fits within a target file size.
 - Added autosave every 30 seconds with session recovery dialog on restart.
 - Added Trim Frames and Resize Source controls for editing loaded frames before labeling.
 - Refactored single-file app into modules: models, animation, rendering, project, diagnostics, workers.

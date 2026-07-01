@@ -33,6 +33,7 @@ Add animated text to GIFs for meme creation. Track text labels on moving subject
 - **Autosave & Recovery** - Project state saved every 30 seconds with crash recovery prompt on restart
 - **Versioned Project Schema** - Project loads validate schema, paths, frame ranges, colors, opacity, and keyframe fields before applying state
 - **Multi-Format Export** - GIF, WebP (with alpha), PNG sequence, MP4, WebM
+- **Size-Target Export** - Iteratively re-encode until output fits within a target file size (e.g., Discord 10 MB)
 - **Trim Frames** - Cut start/end frames from the loaded source
 - **Resize Source** - Downscale loaded frames for smaller output files
 - **Zoom & Pan** - Ctrl+wheel to zoom, middle-click to pan
