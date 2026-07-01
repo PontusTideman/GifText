@@ -10,6 +10,7 @@ All notable changes to GifText will be documented in this file.
 - Added in-app diagnostics bundle export with version, dependency, OS, and log details.
 - Added MP4 and WebM video export via PyAV alongside existing GIF/WebP/PNG formats.
 - Added `--render` CLI mode for headless project rendering to GIF/WebP/PNG/MP4/WebM.
+- Added per-frame delay override with apply-to-all option.
 - Added APNG animated PNG export format.
 - Added custom font import from TTF/OTF files with Qt registration and PIL export support.
 - Added size-target export that iteratively downscales until the output fits within a target file size.

@@ -1880,6 +1880,26 @@ class GifTextApp(QMainWindow):
         range_layout.addWidget(self.btn_visible_range, 4, 1)
         rl.addWidget(range_group)
 
+        delay_group = QGroupBox("7. Frame Delay")
+        delay_layout = QGridLayout(delay_group)
+        delay_layout.setVerticalSpacing(4)
+        delay_note = QLabel("Override the delay for the current frame (in milliseconds).")
+        delay_note.setObjectName("sectionNote")
+        delay_note.setWordWrap(True)
+        delay_layout.addWidget(delay_note, 0, 0, 1, 2)
+        delay_layout.addWidget(QLabel("Delay (ms):"), 1, 0)
+        self.spin_frame_delay = QSpinBox()
+        self.spin_frame_delay.setRange(10, 10000)
+        self.spin_frame_delay.setValue(100)
+        self.spin_frame_delay.setSuffix(" ms")
+        self.spin_frame_delay.valueChanged.connect(self._on_frame_delay_changed)
+        delay_layout.addWidget(self.spin_frame_delay, 1, 1)
+        self.btn_apply_delay_all = QPushButton("Apply to All Frames")
+        self.btn_apply_delay_all.setObjectName("ghost")
+        self.btn_apply_delay_all.clicked.connect(self._apply_delay_to_all)
+        delay_layout.addWidget(self.btn_apply_delay_all, 2, 0, 1, 2)
+        rl.addWidget(delay_group)
+
         diag_group = QGroupBox("Diagnostics")
         diag_layout = QVBoxLayout(diag_group)
         diag_layout.setContentsMargins(10, 10, 10, 10)
@@ -1961,6 +1981,8 @@ class GifTextApp(QMainWindow):
         self.spin_frame_out.setAccessibleName("Layer end frame")
         self.spin_fade_in.setAccessibleName("Fade in frames")
         self.spin_fade_out.setAccessibleName("Fade out frames")
+        self.spin_frame_delay.setAccessibleName("Frame delay in milliseconds")
+        self.btn_apply_delay_all.setAccessibleName("Apply current delay to all frames")
         self.btn_trim.setAccessibleName("Trim frame range")
         self.btn_resize.setAccessibleName("Resize source frames")
         self.diagnostics_view.setAccessibleName("Diagnostics log")
@@ -2339,6 +2361,10 @@ class GifTextApp(QMainWindow):
         self._refresh_chrome_state()
         self._sync_props_from_layer()
         self._update_undo_btns()
+        if self.frame_durations and 0 <= self.current_frame < len(self.frame_durations):
+            self.spin_frame_delay.blockSignals(True)
+            self.spin_frame_delay.setValue(self.frame_durations[self.current_frame])
+            self.spin_frame_delay.blockSignals(False)
 
     # ================================================================
     #  Layers
@@ -2690,6 +2716,17 @@ class GifTextApp(QMainWindow):
         self.selected_layer.stagger_frames = self.spin_stagger_frames.value()
         self._schedule_snapshot()
         self._update_all()
+
+    def _on_frame_delay_changed(self, value):
+        if self.frame_durations and 0 <= self.current_frame < len(self.frame_durations):
+            self.frame_durations[self.current_frame] = value
+
+    def _apply_delay_to_all(self):
+        if not self.frame_durations:
+            return
+        value = self.spin_frame_delay.value()
+        self.frame_durations = [value] * len(self.frame_durations)
+        self.statusBar().showMessage(f"All {len(self.frame_durations)} frames set to {value} ms")
 
     def _pick_color(self, target):
         if not self.selected_layer:
