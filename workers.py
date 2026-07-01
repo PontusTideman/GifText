@@ -348,7 +348,37 @@ class ExportWorker(CancelableWorker):
                 self.canceled.emit()
                 return
 
-            if self.ext == '.webp':
+            if self.ext in ('.mp4', '.webm') and HAS_IMAGEIO:
+                import av
+                avg_duration = sum(self.frame_durations) / max(1, len(self.frame_durations))
+                fps = max(1, round(1000.0 / max(1, avg_duration)))
+                codec = "libvpx" if self.ext == ".webm" else "mpeg4"
+                pix_fmt = "yuv420p"
+                container = av.open(self.path, mode="w")
+                stream = container.add_stream(codec, rate=fps)
+                stream.width = rendered[0].width
+                stream.height = rendered[0].height
+                stream.pix_fmt = pix_fmt
+                for i, frame in enumerate(rendered):
+                    if self._is_canceled():
+                        container.close()
+                        try:
+                            os.remove(self.path)
+                        except OSError:
+                            pass
+                        self.canceled.emit()
+                        return
+                    import numpy as _np
+                    rgb = _np.asarray(frame.convert("RGB"))
+                    video_frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+                    for packet in stream.encode(video_frame):
+                        container.mux(packet)
+                    self.progress.emit(70 + int((i + 1) / total * 30), f"Encoding frame {i + 1} of {total}")
+                for packet in stream.encode():
+                    container.mux(packet)
+                container.close()
+                output = self.path
+            elif self.ext == '.webp':
                 frames = [f.convert("RGBA") for f in rendered]
                 frames[0].save(
                     self.path, save_all=True, append_images=frames[1:],

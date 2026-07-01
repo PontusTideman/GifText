@@ -8,6 +8,7 @@ All notable changes to GifText will be documented in this file.
 - Added optional `--sign` flag for code signing with a certificate when available.
 - Added video import support via imageio-ffmpeg for short clips (MP4, WebM, AVI, MOV).
 - Added in-app diagnostics bundle export with version, dependency, OS, and log details.
+- Added MP4 and WebM video export via PyAV alongside existing GIF/WebP/PNG formats.
 
 ## [v1.4.2] - 2026-06-28
 

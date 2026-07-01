@@ -31,7 +31,7 @@ Add animated text to GIFs for meme creation. Track text labels on moving subject
 - **Undo/Redo** - Full 50-level undo history (Ctrl+Z / Ctrl+Y)
 - **Project Save/Load** - Resume work later with `.giftext` project files
 - **Versioned Project Schema** - Project loads validate schema, paths, frame ranges, colors, opacity, and keyframe fields before applying state
-- **Multi-Format Export** - GIF, WebP (with alpha), PNG sequence
+- **Multi-Format Export** - GIF, WebP (with alpha), PNG sequence, MP4, WebM
 - **Zoom & Pan** - Ctrl+wheel to zoom, middle-click to pan
 - **Drag & Drop** - Drop GIF files directly onto the canvas
 - **Playback Speed** - 0.25x to 4x preview speed

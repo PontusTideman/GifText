@@ -3194,9 +3194,10 @@ class GifTextApp(QMainWindow):
 
         default_name = os.path.splitext(os.path.basename(self.gif_path))[0] + "_meme.gif"
         default_dir = os.path.dirname(self.gif_path)
+        video_filters = ";;MP4 Video (*.mp4);;WebM Video (*.webm)" if HAS_IMAGEIO else ""
         path, filt = QFileDialog.getSaveFileName(
             self, "Export", os.path.join(default_dir, default_name),
-            "GIF (*.gif);;WebP (*.webp);;PNG Sequence (*.png)"
+            f"GIF (*.gif);;WebP (*.webp);;PNG Sequence (*.png){video_filters}"
         )
         if not path:
             return

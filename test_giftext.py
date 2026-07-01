@@ -590,6 +590,27 @@ class WorkerTests(unittest.TestCase):
         self.assertIsNot(rendered, frame)
         self.assertGreater(rendered.getbbox()[2], 0)
 
+    @unittest.skipUnless(HAS_IMAGEIO, "imageio not installed")
+    def test_export_worker_writes_mp4_video(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "out.mp4")
+            frames = [
+                Image.new("RGBA", (64, 48), (0, 0, 0, 255)),
+                Image.new("RGBA", (64, 48), (50, 0, 0, 255)),
+            ]
+            layer = self._text_layer()
+            worker = ExportWorker(frames, [layer.to_dict()], [100, 100], 2, output, ".mp4")
+            results = []
+            failures = []
+            worker.finished.connect(results.append)
+            worker.failed.connect(failures.append)
+
+            worker.run()
+
+            self.assertEqual(failures, [])
+            self.assertTrue(os.path.exists(output))
+            self.assertGreater(os.path.getsize(output), 0)
+
     def test_unicode_text_uses_export_font_fallback(self):
         frame = Image.new("RGBA", (220, 80), (0, 0, 0, 0))
         layer = TextLayer("مرحبا 안녕 नमस्ते")
